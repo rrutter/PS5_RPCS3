@@ -735,6 +735,15 @@ int run(const char* boot_path)
 	}
 
 	trace("frontend: logs open");
+
+	// lab: /app0/rpcs3-spurs-trace.txt (any content) turns the cellSpurs channel to
+	// trace: the workload kick/complete/remove events RPCS3.log then keeps, so a
+	// freeze shows which SPURS event never arrived
+	if (fs::is_file("/app0/rpcs3-spurs-trace.txt"))
+	{
+		logs::set_level("cellSpurs", logs::level::trace);
+		trace("frontend: cellSpurs channel at trace level");
+	}
 	create_callbacks();
 
 	Emu.SetHasGui(false);
