@@ -9,6 +9,8 @@
 namespace
 {
 	void (*g_poll_pads)(rpcs3_ps5_pad pads[rpcs3_ps5_pad_players]) = nullptr;
+	// lab: read once at first use
+	const bool s_trace_pads = [] { return fs::is_file("/app0/pad-trace.txt"); }();
 
 	// L2 and R2 are analog on both; past this they also count as pressed
 	constexpr float trigger_press = 0.25f;
@@ -217,11 +219,25 @@ void ps5_pad_handler::process()
 		// handler's mapping): accel in G * MOTION_ONE_G + rest, yaw to DS3 rate.
 		// (First cut of the signs: if a field reads inverted on console, flip it.)
 		const auto motion = [](float v) { return static_cast<u16>(std::clamp(std::lround(v), 0l, 1023l)); };
-		pad->m_sensors[0].m_value = motion(in.accel_x * 113.0f + 512.0f);
+		// Field-tested round 2: yaw-flip alone changed nothing, so horizontal aim rides
+		// accel_x or roll (gyro_z) - flip both candidates; the unused one is invisible
+		pad->m_sensors[0].m_value = motion(in.accel_x * -113.0f + 512.0f);
 		pad->m_sensors[1].m_value = motion(in.accel_y * -113.0f + 512.0f);
 		pad->m_sensors[2].m_value = motion(in.accel_z * -113.0f + 512.0f);
-		// Field-tested: left/right read inverted on the console - flip the yaw term
-		pad->m_sensors[3].m_value = motion(in.gyro_y * (-123.0f / 90.0f) + 512.0f);
+		pad->m_sensors[3].m_value = motion(-in.gyro_z * (123.0f / 90.0f) + 512.0f);
+
+		// lab: /app0/pad-trace.txt = log the raw IMU once a second (axis calibration)
+		if (s_trace_pads && player == 0)
+		{
+			static std::chrono::steady_clock::time_point last{};
+			const auto now = std::chrono::steady_clock::now();
+			if (now - last >= std::chrono::seconds(1))
+			{
+				last = now;
+				input_log.notice("pad IMU: accel %+.2f %+.2f %+.2f | gyro %+.2f %+.2f %+.2f",
+					in.accel_x, in.accel_y, in.accel_z, in.gyro_x, in.gyro_y, in.gyro_z);
+			}
+		}
 	}
 
 	connected_devices = connected;
