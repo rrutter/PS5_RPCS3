@@ -194,6 +194,17 @@ error_code sys_mutex_lock(ppu_thread& ppu, u32 mutex_id, u64 timeout)
 
 	if (!mutex)
 	{
+		// lab: /app0/spurs-signal-trace.txt = name the caller when a game spins on a
+		// zero/garbage mutex id (the ASMJIT wedge: main_thread loops lock(0)->ESRCH)
+		if (mutex_id == 0)
+		{
+			static atomic_t<u32> logged{0};
+			if (logged < 20 && fs::is_file("/app0/spurs-signal-trace.txt"))
+			{
+				logged++;
+				sys_mutex.notice("[mutex0] lock(0) from %s LR 0x%llx r4 0x%llx", ppu.get_name(), ppu.lr, ppu.gpr[4]);
+			}
+		}
 		return CELL_ESRCH;
 	}
 
