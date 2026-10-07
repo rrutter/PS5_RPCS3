@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include <fstream>
 #include "Utilities/JIT.h"
 #include "Utilities/date_time.h"
 #include "Emu/Memory/vm.h"
@@ -2045,6 +2046,21 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 
 	u32 eal = args.eal;
 	u32 lsa = args.lsa & 0x3ffff;
+
+	// lab: spy on SPU DMA reads of the SPURS instance (flag /app0/spurs-dma-trace.txt)
+	static const u32 spy_base = []() -> u32
+	{
+		if (!fs::is_file("/app0/spurs-dma-trace.txt")) return 0;
+		u32 a = 0x5631a300;
+		if (std::ifstream f{ "/app0/spurs-addr.txt" }) f >> std::hex >> a;
+		return a;
+	}();
+	if (spy_base && is_get && eal >= spy_base && eal < spy_base + 0x100)
+	{
+		const u8* d = vm::get_super_ptr<u8>(eal);
+		spu_log.trace("spurs-dma: read @%x off +%02x size %u: %02x %02x %02x %02x %02x %02x %02x %02x",
+			eal, eal - spy_base, args.size, d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
+	}
 
 	// Keep src point to const
 	u8* dst = nullptr;
