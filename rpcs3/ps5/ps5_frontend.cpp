@@ -1015,7 +1015,12 @@ int run(const char* boot_path)
 								const u32 r_read32 = vm::read32(saddr + 0xb8);
 								const u32 r_base = *reinterpret_cast<const u32*>(vm::g_base_addr + saddr + 0xb8);
 								trace("lab: coherence test on the live SPURS page: super %08x | read32 %08x | base %08x (want deadbeef x3)", r_super, r_read32, r_base);
-								vm::light_op<true>(sp->xB8, [&](auto& v){ v = saved; });
+								// leave the sentinel in the padding: if it decays on later pulses,
+								// something (the parked kernels' DMA writeback) stomps this page
+							}
+							else
+							{
+								fmt::append(spurst, " xB8 %08x", static_cast<u32>(sp->xB8));
 							}
 							// lab v2: print EXACTLY what the kernel's wake equation reads
 							// (wklFlag | wklSignal | readyCount != 0 && readyCount+idle > contention)
