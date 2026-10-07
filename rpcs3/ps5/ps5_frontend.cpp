@@ -635,6 +635,19 @@ extern "C" void catchReturnFromMain(int status);
 {
 	std::fprintf(stderr, "RPCS3: fatal error: %.*s\n", static_cast<int>(text.size()), text.data());
 	trace("fatal error: %s", text);
+	trace("fatal thread: %s", thread_ctrl::get_name());
+	trace("fatal anchor: report_fatal_error=%p", reinterpret_cast<void*>(&report_fatal_error));
+	if (void** fp = static_cast<void**>(__builtin_frame_address(0)))
+	{
+		for (int i = 0; i < 32 && fp; i++)
+		{
+			void** next = static_cast<void**>(fp[0]);
+			void* ra = fp[1];
+			if (!ra || next <= fp) break;
+			trace("  frame %02d: %p", i, ra);
+			fp = next;
+		}
+	}
 	if (!g_trace)
 	{
 		// Before the title's main (RPCS3's static initialisers reserve the guest
