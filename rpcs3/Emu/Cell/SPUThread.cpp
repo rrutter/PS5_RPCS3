@@ -2898,6 +2898,26 @@ bool spu_thread::do_list_transfer(spu_mfc_cmd& args)
 			std::memcpy(&items[sizeof(v128) / sizeof(list_element) * 1], &data1, sizeof(v128));
 			std::memcpy(&items[sizeof(v128) / sizeof(list_element) * 2], &data2, sizeof(v128));
 
+			// lab: spy list-DMA elements that touch the SPURS instance (same flag)
+			static const u32 spy_base_l = []() -> u32
+			{
+				if (!fs::is_file("/app0/spurs-dma-trace.txt")) return 0;
+				u32 a = 0x5631a300;
+				if (std::ifstream f{ "/app0/spurs-addr.txt" }) f >> std::hex >> a;
+				return a;
+			}();
+			if (spy_base_l)
+			{
+				for (const auto& it : items)
+				{
+					const u32 ea = static_cast<u32>(it.ea);
+					if (ea >= spy_base_l && ea < spy_base_l + 0x200)
+					{
+						spu_log.trace("spurs-dma-list: tag %u ea %x (off +%x) tsz %u", transfer.tag, ea, ea - spy_base_l, static_cast<u32>(it.ts));
+					}
+				}
+			}
+
 			u32 s_size = data0._u32[0];
 
 			// We need to verify matching between odd and even elements (vector test is position independent)
