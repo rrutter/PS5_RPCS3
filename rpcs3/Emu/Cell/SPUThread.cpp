@@ -6079,6 +6079,11 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 		// Reset GETLLAR metadata
 		last_getllar_addr = umax;
 
+		// lab: /app0/spurs-signal-trace.txt = log every SPU->PPU completion signal
+		// (the ASMJIT deadlock suspect: does the kernel's phone call fire under JIT?)
+		if (fs::is_file("/app0/spurs-signal-trace.txt"))
+			spu_log.notice("[signal-trace] %s OutIntrMbox <- 0x%08x (pc 0x%05x)", get_name(), value, pc);
+
 		if (get_type() >= spu_type::raw)
 		{
 			if (state & cpu_flag::pending)
