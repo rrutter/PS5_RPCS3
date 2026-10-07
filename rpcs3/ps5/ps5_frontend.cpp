@@ -1020,6 +1020,21 @@ int run(const char* boot_path)
 						if (vm::check_addr(saddr, vm::page_readable, 0xd0))
 						{
 							const auto sp = vm::get_super_ptr<CellSpurs>(saddr);
+							// one-shot coherence test on the struct's unused padding (xB8):
+							// light_op (mirror write) then read via mirror, vm::read32, and
+							// the raw base view - divergence = HLE writes die to the game
+							static bool coherence_done = false;
+							if (!coherence_done)
+							{
+								coherence_done = true;
+								const u32 saved = sp->xB8;
+								vm::light_op<true>(sp->xB8, [](u32& v){ v = 0xdeadbeef; });
+								const u32 r_super = sp->xB8;
+								const u32 r_read32 = vm::read32(saddr + 0xb8);
+								const u32 r_base = *reinterpret_cast<const u32*>(vm::g_base_addr + saddr + 0xb8);
+								trace("lab: coherence test on the live SPURS page: super %08x | read32 %08x | base %08x (want deadbeef x3)", r_super, r_read32, r_base);
+								vm::light_op<true>(sp->xB8, [&](u32& v){ v = saved; });
+							}
 							// lab v2: print EXACTLY what the kernel's wake equation reads
 							// (wklFlag | wklSignal | readyCount != 0 && readyCount+idle > contention)
 							// both ready banks, both contention triples, the mode flag - no interpretation
