@@ -12,6 +12,10 @@
 
 #include "util/cpu_stats.hpp"
 
+#ifdef __PROSPERO__
+f32 ps5_sampled_load(u32 group); // PS5: rpcs3/ps5/ps5_frontend.cpp
+#endif
+
 namespace rsx
 {
 	namespace overlays
@@ -533,24 +537,50 @@ namespace rsx
 					}
 					case detail_level::medium:
 					{
-						m_ppus = idm::select<named_thread<ppu_thread>>([this](u32, named_thread<ppu_thread>& ppu)
+						u64 ppu_ns = 0, spu_ns = 0;
+
+						m_ppus = idm::select<named_thread<ppu_thread>>([&](u32, named_thread<ppu_thread>& ppu)
 						{
-							m_ppu_cycles += thread_ctrl::get_cycles(ppu);
+							const u64 cycles = thread_ctrl::get_cycles(ppu);
+							m_ppu_cycles += cycles;
+							ppu_ns += cycles;
 						});
 
-						m_spus = idm::select<named_thread<spu_thread>>([this](u32, named_thread<spu_thread>& spu)
+						m_spus = idm::select<named_thread<spu_thread>>([&](u32, named_thread<spu_thread>& spu)
 						{
-							m_spu_cycles += thread_ctrl::get_cycles(spu);
+							const u64 cycles = thread_ctrl::get_cycles(spu);
+							m_spu_cycles += cycles;
+							spu_ns += cycles;
 						});
 
-						m_rsx_cycles += rsx_thread.get_cycles();
+						const u64 rsx_ns = rsx_thread.get_cycles();
+						m_rsx_cycles += rsx_ns;
 
+#ifdef __PROSPERO__
+						// PS5: no CPU time per thread or for the process (a thread's CPU
+						// clock runs with the wall clock, times() counts one thread: the
+						// loads read 18/16, 6/16 and 1/16 for 18 PPU, 6 SPU and 1 RSX
+						// threads). The PPU and SPU loads are their threads sampled
+						// running, of all the hardware threads, over the last five
+						// seconds (ps5_frontend.cpp), and RSX's its own busy share
+						{
+							static_cast<void>(ppu_ns);
+							static_cast<void>(spu_ns);
+							static_cast<void>(rsx_ns);
+							m_ppu_usage = std::clamp(ps5_sampled_load(0), 0.f, 100.f);
+							m_spu_usage = std::clamp(ps5_sampled_load(1), 0.f, 100.f);
+							m_rsx_usage = std::clamp(static_cast<f32>(rsx_thread.get_load()), 0.f, 100.f);
+							m_cpu_usage = std::min(100.f, m_ppu_usage + m_spu_usage);
+							m_total_cycles = std::max<u64>(1, m_ppu_cycles + m_spu_cycles + m_rsx_cycles);
+						}
+#else
 						m_total_cycles = std::max<u64>(1, m_ppu_cycles + m_spu_cycles + m_rsx_cycles);
 						m_cpu_usage    = static_cast<f32>(m_cpu_stats.get_usage());
 
 						m_ppu_usage = std::clamp(m_cpu_usage * m_ppu_cycles / m_total_cycles, 0.f, 100.f);
 						m_spu_usage = std::clamp(m_cpu_usage * m_spu_cycles / m_total_cycles, 0.f, 100.f);
 						m_rsx_usage = std::clamp(m_cpu_usage * m_rsx_cycles / m_total_cycles, 0.f, 100.f);
+#endif
 
 						[[fallthrough]];
 					}

@@ -3596,6 +3596,21 @@ u64 thread_base::get_cycles()
 	}
 }
 
+u64 thread_base::get_cpu_time_ns() const
+{
+#if defined(_WIN32) || defined(__APPLE__) || defined(ANDROID)
+	return 0;
+#else
+	clockid_t clock;
+	struct timespec time;
+	if (!pthread_getcpuclockid(reinterpret_cast<pthread_t>(m_thread.load()), &clock) && !clock_gettime(clock, &time))
+	{
+		return static_cast<u64>(time.tv_sec) * 1'000'000'000 + time.tv_nsec;
+	}
+	return 0;
+#endif
+}
+
 void thread_base::push(shared_ptr<thread_future> task)
 {
 	const auto next = &task->next;
@@ -4085,15 +4100,35 @@ void thread_ctrl::set_native_priority(int priority)
 
 	pthread_getschedparam(pthread_self(), &policy, &param);
 
+#ifdef __PROSPERO__
+	// PS5: a lower number is a higher priority (256 to 767, 700 a title's
+	// threads' own, under SCHED_FIFO), so the range's top is its lowest: the
+	// threads meant above the rest (cellAudio's, RSXAudio's, RSX's) ran below
+	// them and those meant below (the compilers) above, and GTA IV's sound
+	// broke up whenever the console was busy (cellAudio's period late), on my
+	// console. Above: 600, a step over the title's own. Below: left as they
+	// are, as FIFO has no boost to keep a thread below the rest from starving
+	if (priority > 0)
+		param.sched_priority = std::max(sched_get_priority_min(policy), 600);
+	if (priority < 0)
+		return;
+#else
 	if (priority > 0)
 		param.sched_priority = sched_get_priority_max(policy);
 	if (priority < 0)
 		param.sched_priority = sched_get_priority_min(policy);
+#endif
 
 	if (int err = pthread_setschedparam(pthread_self(), policy, &param))
 	{
 		sig_log.error("pthread_setschedparam() failed: %d", err);
 	}
+#ifdef __PROSPERO__
+	else if (priority > 0)
+	{
+		sig_log.notice("Thread '%s' raised to priority %d", thread_ctrl::get_name(), param.sched_priority);
+	}
+#endif
 #endif
 }
 

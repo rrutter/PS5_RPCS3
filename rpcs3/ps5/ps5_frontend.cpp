@@ -7,11 +7,17 @@
 // runs a queue of the calls RPCS3 makes "from the main thread".
 
 #include "stdafx.h"
+#include <map>
 #include "ps5_frontend.h"
+
+#include <sys/stat.h>
+
+std::string ps5_open_files_report(); // ps5_fdtrack.cpp
 #include "ps5_gs_frame.h"
 #include "ps5_pad_handler.h"
 #include "ps5_firmware.h"
 #include "ps5_embedded_files.h"
+#include "ps5_audio_backend.h"
 #include "Input/pad_thread.h"
 
 #include "util/logs.hpp"
@@ -98,6 +104,87 @@ namespace
 		{
 			g_trace(fmt::format(format, args...).c_str());
 		}
+	}
+
+	// The PS3's threads' loads, sampled. The console reports no CPU time per
+	// thread or for the process: a thread's CPU clock runs with the wall clock
+	// whether the thread works or waits (build 81's overlay read 18/16, 6/16
+	// and 1/16 for 18 PPU, 6 SPU and 1 RSX threads, on my console), and times()
+	// counts one thread. The status thread samples which PPU and SPU threads
+	// are running rather than waiting, stopped or suspended, from the state
+	// they keep themselves, 20 times a second while a game has run for ten
+	// seconds. (A thread of its own sampling 500 times a second from boot on
+	// froze the title as games booted: build 82.)
+	struct sampled_load
+	{
+		std::string name;
+		u32 running = 0;
+		u32 samples = 0;
+	};
+
+	std::map<u64, sampled_load> g_loads;  // by group (PPU 0, SPU 1) and id, for the trace; the status thread's alone
+	u32 g_group_running[2]{};             // the groups' running threads, summed over the samples
+	u32 g_group_samples = 0;
+	atomic_t<f32> g_group_load[2]{};      // each group's running threads as a share of the hardware threads, over the last five seconds
+
+	bool is_running(const cpu_thread& thread)
+	{
+		return !(thread.state & (cpu_flag::wait + cpu_flag::stop + cpu_flag::exit + cpu_flag::suspend + cpu_flag::dbg_global_pause + cpu_flag::dbg_pause));
+	}
+
+	void sample_thread_loads()
+	{
+		const auto sample = [&](u32 group, u32 id, const cpu_thread& thread, auto&& name)
+		{
+			sampled_load& load = g_loads[u64{group} << 32 | id];
+			if (load.name.empty())
+			{
+				load.name = name();
+			}
+			const bool busy = is_running(thread);
+			load.running += busy;
+			load.samples++;
+			g_group_running[group] += busy;
+		};
+		idm::select<named_thread<ppu_thread>>([&](u32 id, named_thread<ppu_thread>& ppu)
+		{
+			sample(0, id, ppu, [&] { return "PPU " + ppu.get_name(); });
+		});
+		idm::select<named_thread<spu_thread>>([&](u32 id, named_thread<spu_thread>& spu)
+		{
+			sample(1, id, spu, [&] { return "SPU " + spu.get_name(); });
+		});
+		g_group_samples++;
+	}
+
+	// The busiest since the last call, by the share of the time each ran, and
+	// the groups' loads for the overlay; the counts begin again
+	std::string take_thread_loads()
+	{
+		const f32 hardware = static_cast<f32>(std::max<u32>(1, utils::get_thread_count()));
+		for (u32 group = 0; group < 2; group++)
+		{
+			g_group_load[group].store(g_group_samples ? 100.f * g_group_running[group] / g_group_samples / hardware : 0.f);
+			g_group_running[group] = 0;
+		}
+		g_group_samples = 0;
+
+		std::vector<std::pair<f64, std::string>> loads;
+		for (const auto& [key, load] : g_loads)
+		{
+			if (load.samples)
+			{
+				loads.emplace_back(100.0 * load.running / load.samples, load.name);
+			}
+		}
+		g_loads.clear();
+		std::sort(loads.begin(), loads.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+		std::string result;
+		for (usz i = 0; i < loads.size() && i < 10 && loads[i].first >= 5.0; i++)
+		{
+			fmt::append(result, " [%s %.0f%%]", loads[i].second, loads[i].first);
+		}
+		return result;
 	}
 
 	// Every file and folder under path made readable and writable by all, and
@@ -410,6 +497,12 @@ namespace
 			}
 		}
 
+		// A stop with nothing to boot after it (on_stop): the title ends once the
+		// main thread's call that saw it is done, if the emulator is still
+		// stopped then. Big Picture Mode hands off to a game by stopping its own
+		// shell and booting the game in one call, and must not end the title
+		atomic_t<bool> stop_pending = false;
+
 		// Runs the calls as they come, until quit is asked for
 		void run()
 		{
@@ -427,6 +520,10 @@ namespace
 					{
 						*wake_up = true;
 						wake_up->notify_one();
+					}
+					if (stop_pending.exchange(false) && Emu.IsStopped())
+					{
+						quit = true;
 					}
 					lock.lock();
 				}
@@ -497,8 +594,13 @@ namespace
 
 		g_emu_callbacks.get_audio = []() -> std::shared_ptr<AudioBackend>
 		{
-			// The console's audio output is the next step
-			return std::make_shared<NullAudioBackend>();
+			// The console's own output (libSceAudioOut), a port per backend
+			// RPCS3 opens; /app0/rpcs3-mute.txt keeps the silent one
+			if (fs::is_file("/app0/rpcs3-mute.txt"))
+			{
+				return std::make_shared<NullAudioBackend>();
+			}
+			return std::make_shared<ps5_audio_backend>();
 		};
 		g_emu_callbacks.get_audio_enumerator = [](u64) -> std::shared_ptr<audio_device_enumerator>
 		{
@@ -581,7 +683,10 @@ namespace
 		g_emu_callbacks.play_sound = [](const std::string&, std::optional<f32>) {};
 		g_emu_callbacks.get_image_info = [](const std::string&, std::string&, s32&, s32&, s32&) { return false; };
 		g_emu_callbacks.get_scaled_image = [](const std::string&, s32, s32, s32&, s32&, u8*, bool) { return false; };
-		g_emu_callbacks.get_font_dirs = []() { return std::vector<std::string>{}; };
+		// The title's fonts (the launcher's Inter); the overlays' default is still
+		// the PS3's own, from dev_flash
+		fs::ps5_on_many_open = [](const std::string& report) { trace("open files: %s; %s", report, ps5_open_files_report()); };
+		g_emu_callbacks.get_font_dirs = []() { return std::vector<std::string>{"/app0/assets/fonts/"}; };
 		// A disc's packages (PKGDIR, INSDIR, PS3_EXTRA), installed to dev_hdd0 at
 		// its first boot, as the desktop's headless frontend does
 		g_emu_callbacks.on_install_pkgs = [](const std::vector<std::string>& pkgs, bool from_optical_drive)
@@ -898,16 +1003,21 @@ int run(const char* boot_path)
 		trace("config: shaders compiled asynchronously, without the shader interpreter");
 	}
 
-	// Nothing named to boot: the PS3's own home menu, as the desktop's Boot VSH
+	// Nothing named to boot: RPCS3's Big Picture Mode, the game library on the
+	// display, over the games in /app0/rpcs3/games/; "vsh" named: the PS3's
+	// own home menu, as the desktop's Boot VSH
 	std::string vsh_path;
-	if ((!boot_path || !*boot_path) && !firmware.empty())
+	bool big_picture = false;
+	if (boot_path && (std::string_view(boot_path) == "vsh" || std::string_view(boot_path) == "xmb"))
 	{
 		vsh_path = g_cfg_vfs.get_dev_flash() + "vsh/module/vsh.self";
-		if (fs::is_file(vsh_path))
-		{
-			boot_path = vsh_path.c_str();
-			trace("frontend: booting the PS3 home menu, %s", vsh_path);
-		}
+		boot_path = fs::is_file(vsh_path) ? vsh_path.c_str() : nullptr;
+		trace("frontend: booting the PS3 home menu, %s", boot_path ? vsh_path : std::string("missing"));
+	}
+	else if (!boot_path || !*boot_path)
+	{
+		big_picture = true;
+		trace("frontend: nothing named to boot: Big Picture Mode, games from %s", rpcs3::utils::get_games_dir());
 	}
 	rpcs3::utils::configure_logs(true);
 
@@ -939,7 +1049,14 @@ int run(const char* boot_path)
 	}
 
 	int status = 0;
-	if (boot_path && *boot_path)
+	bool booted = false;
+	if (big_picture)
+	{
+		booted = Emu.BootBigPictureMode();
+		trace("frontend: Big Picture Mode %s", booted ? "booted" : "failed to boot");
+		status = booted ? 0 : 1;
+	}
+	else if (boot_path && *boot_path)
 	{
 		if (fs::is_file("/app0/rpcs3-spurs-trace.txt"))
 		{
@@ -958,6 +1075,13 @@ int run(const char* boot_path)
 		}
 		else
 		{
+			booted = true;
+		}
+	}
+
+	{
+		if (booted)
+		{
 			trace("frontend: booted; running until the emulation stops");
 			g_booted = true;
 
@@ -965,14 +1089,35 @@ int run(const char* boot_path)
 			// RSX flipped, and where the PPU threads are, to tell a stall from slow
 			named_thread status("PS5 Status", []()
 			{
+				u32 running_for = 0; // seconds a game has run without a stop
 				for (u32 seconds = 0; thread_ctrl::state() != thread_state::aborting; seconds++)
 				{
-					thread_ctrl::wait_for(1'000'000);
+					const bool sampling = running_for >= 10;
+					for (u32 tick = 0; tick < 20 && thread_ctrl::state() != thread_state::aborting; tick++)
+					{
+						thread_ctrl::wait_for(50'000);
+						if (sampling && Emu.IsRunning())
+						{
+							sample_thread_loads();
+						}
+					}
+					running_for = Emu.IsRunning() && !Emu.GetTitleID().empty() ? running_for + 1 : 0;
+					if (!running_for)
+					{
+						g_loads.clear();
+					}
 					if (seconds % 5 != 4 || Emu.IsStopped())
 					{
 						continue;
 					}
 					const auto render = rsx::get_current_renderer();
+
+					// The busiest of the PS3's threads over these five seconds
+					if (const std::string busiest = take_thread_loads(); !busiest.empty())
+					{
+						trace("busiest threads (share of the time each was running):%s", busiest);
+					}
+
 					std::string ppus;
 					// lab: wedge analyzer - main_thread parked at one PC across pulses gets
 					// its registers dumped, pointer-looking ones dereferenced (the spinlock
@@ -1100,9 +1245,30 @@ int run(const char* boot_path)
 					// ppu_cmd::initialize), and with both recompilers the home menu
 					// stayed on its loading screen with no PPU code run (974d605)
 					const std::string progress_text = g_progr_text;
-					trace("status %ds: state %d, RSX flips %d; heap %d MiB (peak %d), free direct %d MiB, flexible %d MiB; progress '%s' modules %u/%u files %u/%u; %d PPU threads:%s; %d SPU threads:%s%s", seconds + 1,
+					// And the open files: a title holds about 249 by path at once,
+					// and GTA IV's boot ran out of them (bfb4830). Every descriptor
+					// below 4096, by kind, and those RPCS3's fs opened
+					u32 regular = 0, folders = 0, sockets = 0, others = 0;
+					for (int fd = 0; fd < 4096; fd++)
+					{
+						struct ::stat info;
+						if (::fstat(fd, &info) != 0) continue;
+						if (S_ISREG(info.st_mode)) regular++;
+						else if (S_ISDIR(info.st_mode)) folders++;
+						else if (S_ISSOCK(info.st_mode)) sockets++;
+						else others++;
+					}
+					// lab: their open-files watch + our SPU threads and SPURS sections
+					trace("status %ds: state %d, RSX flips %d; heap %d MiB (peak %d), free direct %d MiB, flexible %d MiB; progress '%s' modules %u/%u files %u/%u; open: %u files, %u folders, %u sockets, %u other (%u by fs); %d PPU threads:%s; %d SPU threads:%s%s", seconds + 1,
 						static_cast<u32>(Emu.GetStatus()), render ? render->int_flip_index : 0, heap.mapped_bytes >> 20, heap.peak_bytes >> 20, direct >> 20,
-						flexible >> 20, progress_text, +g_progr_pdone, +g_progr_ptotal, +g_progr_fdone, +g_progr_ftotal, count, ppus, scount, spus, spurst);
+						flexible >> 20, progress_text, +g_progr_pdone, +g_progr_ptotal, +g_progr_fdone, +g_progr_ftotal, regular, folders, sockets, others, static_cast<u32>(fs::ps5_open_tracked()), count, ppus, scount, spus, spurst);
+					// Near the limit, which ones (once per 40 more)
+					static u32 s_reported = 0;
+					if (const u32 open = regular + folders; open >= 150 && open >= s_reported + 40)
+					{
+						s_reported = open;
+						trace("open files: %s; %s", fs::ps5_open_report(), ps5_open_files_report());
+					}
 				}
 			});
 
@@ -1110,15 +1276,20 @@ int run(const char* boot_path)
 			// A reboot the game asks for (sys_sm_shutdown, the home menu's after
 			// rebuilding its database) stops the emulator and then boots again
 			// from after_kill_callback: only a stop without one ends the title
+			// A game Big Picture Mode started returns to it the same way
+			// (Emulator::Kill sets after_kill_callback to BootBigPictureMode);
+			// and the stop that hands the library's shell over to a game is
+			// followed by that game's boot in the same main-thread call, so a
+			// stop ends the title only if nothing runs once that call is done
 			g_emu_callbacks.on_stop = []()
 			{
 				if (!Emu.after_kill_callback)
 				{
-					g_main.request_quit();
+					g_main.stop_pending = true;
 				}
 				else
 				{
-					trace("frontend: the game asked for a reboot");
+					trace("frontend: stopped, booting again (a reboot the game asked for, or back to Big Picture Mode)");
 				}
 			};
 			g_main.run();
@@ -1136,3 +1307,10 @@ int run(const char* boot_path)
 	return status;
 }
 } // namespace
+
+// The performance overlay's PPU (0) and SPU (1) loads on the console: their
+// threads running, as a share of the hardware threads (sample_thread_loads)
+f32 ps5_sampled_load(u32 group)
+{
+	return group < 2 ? g_group_load[group].load() : 0.f;
+}
