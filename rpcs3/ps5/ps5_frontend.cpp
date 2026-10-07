@@ -1170,11 +1170,14 @@ int run(const char* boot_path)
 					std::string spus;
 					const u32 scount = idm::select<named_thread<spu_thread>>([&](u32, spu_thread& spu)
 					{
-						if (spus.size() < 400)
+						if (spus.size() < 640)
 						{
-							// lab: mailbox occupancy too - a kick sitting unread in a kernel's inbox
+							// lab: mailbox occupancy + WHAT the thread waits on: tag mask vs tag
+							// completion, stall channel, reservation address, event bits. A task
+							// parked with tm!=0 and ts==0 starves on a DMA that never completes.
 							const auto& mb = spu.ch_in_mbox.values.raw();
-							fmt::append(spus, " [%s pc 0x%x mb w%u/c%u]", spu.get_name(), spu.pc, mb.waiting, mb.count);
+							fmt::append(spus, " [%s pc 0x%x mb w%u/c%u tm %x ts %u ra %x ev %x]", spu.get_name(), spu.pc, mb.waiting, mb.count,
+								spu.ch_tag_mask, spu.ch_tag_stat.get_count(), spu.raddr, spu.ch_events.load().events);
 						}
 					});
 
