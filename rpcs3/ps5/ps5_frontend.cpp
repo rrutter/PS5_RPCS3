@@ -1000,13 +1000,18 @@ int run(const char* boot_path)
 						if (vm::check_addr(saddr, vm::page_readable, 0xd0))
 						{
 							const auto sp = vm::get_super_ptr<CellSpurs>(saddr);
-							fmt::append(spurst, " | SPURS@%x enabled %08x sig %04x/%04x idle %u nspu %u |",
-								saddr, +sp->wklEnabled, +sp->wklSignal1, +sp->wklSignal2, +sp->spuIdling, +sp->nSpus);
+							// lab v2: print EXACTLY what the kernel's wake equation reads
+							// (wklFlag | wklSignal | readyCount != 0 && readyCount+idle > contention)
+							// both ready banks, both contention triples, the mode flag - no interpretation
+							fmt::append(spurst, " | SPURS@%x flags %02x sig %04x/%04x flag %u/rcv %u idle %u nspu %u |",
+								saddr, +sp->flags1, +sp->wklSignal1, +sp->wklSignal2, +sp->wklFlag.flag, +sp->wklFlagReceiver, +sp->spuIdling, +sp->nSpus);
 							for (u32 w = 0; w < 16; w++)
 							{
 								if (const u32 st = static_cast<u32>(+sp->wklState1[w]))
 								{
-									fmt::append(spurst, " w%u:s%u(rc%u,st%x,ev%x)", w, st, +sp->wklReadyCount1[w], +sp->wklStatus1[w], +sp->wklEvent1[w]);
+									fmt::append(spurst, " w%u{s%u rc %u+%u ct %u>%u>%u}", w, st,
+										+sp->wklReadyCount1[w], +sp->wklIdleSpuCountOrReadyCount2[w],
+										+sp->wklCurrentContention[w], +sp->wklPendingContention[w], +sp->wklMaxContention[w]);
 								}
 							}
 						}
