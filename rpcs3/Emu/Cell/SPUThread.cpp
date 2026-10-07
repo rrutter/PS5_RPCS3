@@ -2055,11 +2055,23 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 		if (std::ifstream f{ "/app0/spurs-addr.txt" }) f >> std::hex >> a;
 		return a;
 	}();
-	if (spy_base && is_get && eal >= spy_base && eal < spy_base + 0x100)
+	// (notice, not trace: the default level drops trace. reads capped - the kernels
+	// poll constantly; writes uncapped - they are the evidence)
+	static u32 rd_logged = 0;
+	if (spy_base && is_get && rd_logged < 200 && eal >= spy_base && eal < spy_base + 0x100)
 	{
+		rd_logged++;
 		const u8* d = vm::get_super_ptr<u8>(eal);
-		spu_log.trace("spurs-dma: read @%x off +%02x size %u: %02x %02x %02x %02x %02x %02x %02x %02x",
+		spu_log.notice("spurs-dma: read @%x off +%02x size %u: %02x %02x %02x %02x %02x %02x %02x %02x",
 			eal, eal - spy_base, args.size, d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
+	}
+	// lab: the WRITE side - the idle-marking PUT targets this page (+0x73 = spuIdling)
+	if (spy_base && !is_get && eal >= spy_base && eal < spy_base + 0x100)
+	{
+		const u8* s = ls + lsa;
+		spu_log.notice("spurs-dma: WRITE @%x off +%02x size %u data %02x %02x %02x %02x %02x %02x %02x %02x | idle-byte %s",
+			eal, eal - spy_base, args.size, s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7],
+			eal <= spy_base + 0x73 && eal + args.size > spy_base + 0x73 ? "IN RANGE" : "-");
 	}
 
 	// Keep src point to const
