@@ -736,14 +736,6 @@ int run(const char* boot_path)
 
 	trace("frontend: logs open");
 
-	// lab: /app0/rpcs3-spurs-trace.txt (any content) turns the cellSpurs channel to
-	// trace: the workload kick/complete/remove events RPCS3.log then keeps, so a
-	// freeze shows which SPURS event never arrived
-	if (fs::is_file("/app0/rpcs3-spurs-trace.txt"))
-	{
-		logs::set_level("cellSpurs", logs::level::trace);
-		trace("frontend: cellSpurs channel at trace level");
-	}
 	create_callbacks();
 
 	Emu.SetHasGui(false);
@@ -942,6 +934,11 @@ int run(const char* boot_path)
 	int status = 0;
 	if (boot_path && *boot_path)
 	{
+		if (fs::is_file("/app0/rpcs3-spurs-trace.txt"))
+		{
+			logs::set_level("cellSpurs", logs::level::trace);
+			trace("frontend: cellSpurs at trace, verify: %d (want %d)", +logs::get_level("cellSpurs"), +logs::level::trace);
+		}
 		trace("frontend: Emu.BootGame %s", boot_path);
 		if (const game_boot_result result = Emu.BootGame(boot_path, "", true); result != game_boot_result::no_errors)
 		{
