@@ -1168,8 +1168,35 @@ int run(const char* boot_path)
 						}
 					});
 					std::string spus;
+					// lab: parked-kernel disassembly - a CellSpursKernel holding one PC window
+					// across four pulses gets its LS instruction words dumped (the spin loop
+					// itself testifies what it waits on)
+					static u32 last_kpc = umax;
+					static int same_kpc_count = 0;
+					static bool kpark_dumped = false;
 					const u32 scount = idm::select<named_thread<spu_thread>>([&](u32, spu_thread& spu)
 					{
+						if (std::string_view(spu.get_name()).find("CellSpursKernel") == 0 && !kpark_dumped)
+						{
+							if (spu.pc >= last_kpc - 0x40 && spu.pc <= last_kpc + 0x40)
+							{
+								if (++same_kpc_count == 4)
+								{
+									kpark_dumped = true;
+									std::string words;
+									for (u32 w = 0; w < 8; w++)
+										fmt::append(words, " %08x", spu._ref<u32>(spu.pc + w * 4));
+									trace("lab kpark-dump: %s pc 0x%x state %x srr0 %x intr %d | ls:%s", spu.get_name(), spu.pc,
+										+spu.state, spu.srr0, spu.interrupts_enabled ? 1 : 0, words);
+								}
+							}
+							else
+							{
+								last_kpc = spu.pc;
+								same_kpc_count = 0;
+								kpark_dumped = false;
+							}
+						}
 						if (spus.size() < 640)
 						{
 							// lab: mailbox occupancy + WHAT the thread waits on: tag mask vs tag
