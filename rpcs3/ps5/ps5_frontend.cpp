@@ -27,6 +27,7 @@
 #include "Emu/IdManager.h"
 #include "Emu/Memory/vm.h"
 #include "Emu/Cell/PPUThread.h"
+#include "Emu/Cell/SPUThread.h"
 #include "Emu/RSX/RSXThread.h"
 #include "Emu/Io/pad_config.h"
 #include "Emu/Io/KeyboardHandler.h"
@@ -964,6 +965,14 @@ int run(const char* boot_path)
 							fmt::append(ppus, " [%s: 0x%x %s]", ppu.get_name(), ppu.cia, ppu.current_function ? ppu.current_function : "");
 						}
 					});
+					std::string spus;
+					const u32 scount = idm::select<named_thread<spu_thread>>([&](u32, spu_thread& spu)
+					{
+						if (spus.size() < 400)
+						{
+							fmt::append(spus, " [%s pc 0x%x]", spu.get_name(), spu.pc);
+						}
+					});
 					// And memory: the home menu's run ended at 205 s with no error of
 					// RPCS3's or signal (71d0fa2), as the kernel ends a title out of
 					// memory or after a GPU fault
@@ -978,9 +987,9 @@ int run(const char* boot_path)
 					// ppu_cmd::initialize), and with both recompilers the home menu
 					// stayed on its loading screen with no PPU code run (974d605)
 					const std::string progress_text = g_progr_text;
-					trace("status %ds: state %d, RSX flips %d; heap %d MiB (peak %d), free direct %d MiB, flexible %d MiB; progress '%s' modules %u/%u files %u/%u; %d PPU threads:%s", seconds + 1,
+					trace("status %ds: state %d, RSX flips %d; heap %d MiB (peak %d), free direct %d MiB, flexible %d MiB; progress '%s' modules %u/%u files %u/%u; %d PPU threads:%s; %d SPU threads:%s", seconds + 1,
 						static_cast<u32>(Emu.GetStatus()), render ? render->int_flip_index : 0, heap.mapped_bytes >> 20, heap.peak_bytes >> 20, direct >> 20,
-						flexible >> 20, progress_text, +g_progr_pdone, +g_progr_ptotal, +g_progr_fdone, +g_progr_ftotal, count, ppus);
+						flexible >> 20, progress_text, +g_progr_pdone, +g_progr_ptotal, +g_progr_fdone, +g_progr_ftotal, count, ppus, scount, spus);
 				}
 			});
 
