@@ -2038,6 +2038,21 @@ void spu_thread::push_snr(u32 number, u32 value)
 	});
 }
 
+// lab: shared spy gate - re-checks the flag once a second (a first-call static
+// can resolve before /app0 answers); window = the SPURS instance +/- 4KB
+static bool spurs_spy_on()
+{
+	static bool on = false;
+	static std::chrono::steady_clock::time_point next{};
+	const auto now = std::chrono::steady_clock::now();
+	if (now >= next)
+	{
+		next = now + std::chrono::seconds(1);
+		on = fs::is_file("/app0/spurs-dma-trace.txt");
+	}
+	return on;
+}
+
 void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8* ls)
 {
 	perf_meter<"DMA"_u32> perf_;
@@ -2047,31 +2062,15 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 	u32 eal = args.eal;
 	u32 lsa = args.lsa & 0x3ffff;
 
-	// lab: spy on SPU DMA reads of the SPURS instance (flag /app0/spurs-dma-trace.txt)
-	static const u32 spy_base = []() -> u32
+	// lab: spy on SPU DMA of the SPURS instance region (flag /app0/spurs-dma-trace.txt)
+	static u32 spy_logged = 0;
+	if (spy_logged < 800 && eal - 0x5631a000u < 0x1000u && spurs_spy_on())
 	{
-		if (!fs::is_file("/app0/spurs-dma-trace.txt")) return 0;
-		u32 a = 0x5631a300;
-		if (std::ifstream f{ "/app0/spurs-addr.txt" }) f >> std::hex >> a;
-		return a;
-	}();
-	// (notice, not trace: the default level drops trace. reads capped - the kernels
-	// poll constantly; writes uncapped - they are the evidence)
-	static u32 rd_logged = 0;
-	if (spy_base && is_get && rd_logged < 200 && eal >= spy_base && eal < spy_base + 0x100)
-	{
-		rd_logged++;
-		const u8* d = vm::get_super_ptr<u8>(eal);
-		spu_log.notice("spurs-dma: read @%x off +%02x size %u: %02x %02x %02x %02x %02x %02x %02x %02x",
-			eal, eal - spy_base, args.size, d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
-	}
-	// lab: the WRITE side - the idle-marking PUT targets this page (+0x73 = spuIdling)
-	if (spy_base && !is_get && eal >= spy_base && eal < spy_base + 0x100)
-	{
-		const u8* s = ls + lsa;
-		spu_log.notice("spurs-dma: WRITE @%x off +%02x size %u data %02x %02x %02x %02x %02x %02x %02x %02x | idle-byte %s",
-			eal, eal - spy_base, args.size, s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7],
-			eal <= spy_base + 0x73 && eal + args.size > spy_base + 0x73 ? "IN RANGE" : "-");
+		spy_logged++;
+		const u8* p = is_get ? vm::get_super_ptr<u8>(eal) : ls + lsa;
+		spu_log.notice("spurs-dma: %s @%x (off %+d) size %u tag %u: %02x %02x %02x %02x %02x %02x %02x %02x",
+			is_get ? "read" : "WRITE", eal, eal - 0x5631a300, args.size, args.tag,
+			p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]);
 	}
 
 	// Keep src point to const
@@ -2925,7 +2924,7 @@ bool spu_thread::do_list_transfer(spu_mfc_cmd& args)
 					const u32 ea = static_cast<u32>(it.ea);
 					if (ea >= spy_base_l && ea < spy_base_l + 0x200)
 					{
-						spu_log.trace("spurs-dma-list: tag %u ea %x (off +%x) tsz %u", transfer.tag, ea, ea - spy_base_l, static_cast<u32>(it.ts));
+						spu_log.notice("spurs-dma-list: tag %u ea %x (off +%x) tsz %u", transfer.tag, ea, ea - spy_base_l, static_cast<u32>(it.ts));
 					}
 				}
 			}
@@ -3433,6 +3432,9 @@ bool spu_thread::do_list_transfer(spu_mfc_cmd& args)
 
 bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 {
+	// lab: the conditional atomic, same watch
+	if ((args.eal & -128) - 0x5631a000u < 0x1000u && spurs_spy_on())
+		spu_log.notice("spurs-atomic: PUTLLC @%x (off %+d) raddr %x", args.eal, args.eal - 0x5631a300, raddr);
 	perf_meter<"PUTLLC-"_u64> perf0;
 	perf_meter<"PUTLLC+"_u64> perf1 = perf0;
 
@@ -3763,6 +3765,16 @@ void spu_thread::do_putlluc(const spu_mfc_cmd& args)
 	perf_meter<"PUTLLUC"_u64> perf0;
 
 	const u32 addr = args.eal & -128;
+
+	// lab: the ATOMIC path - the SPURS idle-marking rides PUTLLUC, if anywhere
+	if (addr - 0x5631a000u < 0x1000u && spurs_spy_on())
+	{
+		const u8* s = _ptr<u8>(args.lsa & 0x3ff80);
+		spu_log.notice("spurs-atomic: PUTLLUC @%x (off %+d) raddr %x | idle-slot byte %02x | data %02x %02x %02x %02x %02x %02x %02x %02x",
+			args.eal, args.eal - 0x5631a300, raddr,
+			addr + 0x73 == 0x5631a300 + 0x73 ? s[0x73] : 0,
+			s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
+	}
 
 	if (raddr && addr == raddr && g_cfg.core.spu_accurate_reservations)
 	{
