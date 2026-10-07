@@ -996,7 +996,8 @@ int run(const char* boot_path)
 									{
 										const u64 v = ppu.gpr[r];
 										fmt::append(dump, " r%d=%llx", r, v);
-										if (v >= 0x10000 && v < 0x40000000u && (v & 3) == 0 && vm::check_addr(static_cast<u32>(v), vm::page_readable, 16))
+										// the console's vm lays the game heap out high (SPURS sits at 0x56xxxxxx)
+										if (v >= 0x10000 && v < 0x70000000u && (v & 3) == 0 && vm::check_addr(static_cast<u32>(v), vm::page_readable, 16))
 										{
 											const u32 a = static_cast<u32>(v);
 											fmt::append(dump, "={%08x %08x %08x %08x}", vm::read32(a), vm::read32(a + 4), vm::read32(a + 8), vm::read32(a + 12));
