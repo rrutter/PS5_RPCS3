@@ -943,12 +943,9 @@ int run(const char* boot_path)
 		// the raw base) - a divergence here is the whole freeze's root. Run right
 		// before BootGame, when the guest's memory is all mapped.
 		{
-			u32 ta = vm::alloc(0x1000, vm::any);
-			if (!ta)
-			{
-				ta = 0x0f000000;
-				vm::falloc(ta, 0x1000, vm::main);
-			}
+			// vm::any is a search sentinel, invalid for alloc (it threw) - map a fresh page instead
+			const u32 ta = 0x0f000000;
+			vm::falloc(ta, 0x1000, vm::main);
 			auto& acell = vm::get_super_ptr<atomic_t<u32>>(ta)[0];
 			acell.store(0);
 			vm::light_op<true>(acell, [](atomic_t<u32>& v){ v.store(0xdeadbeef); });
