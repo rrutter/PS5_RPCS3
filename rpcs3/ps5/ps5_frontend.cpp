@@ -974,8 +974,44 @@ int run(const char* boot_path)
 					}
 					const auto render = rsx::get_current_renderer();
 					std::string ppus;
+					// lab: wedge analyzer - main_thread parked at one PC across pulses gets
+					// its registers dumped, pointer-looking ones dereferenced (the spinlock
+					// target names itself)
+					static u32 last_main_pc = 0;
+					static int same_pc_count = 0;
+					static bool wedge_dumped = false;
 					const u32 count = idm::select<named_thread<ppu_thread>>([&](u32, ppu_thread& ppu)
 					{
+						if (ppu.id == 0x1000000)
+						{
+							// a spin loop spans a few instructions - park = staying near the anchor
+							if (ppu.cia >= last_main_pc - 0x40 && ppu.cia <= last_main_pc + 0x40 && !Emu.IsStopped())
+							{
+								same_pc_count++;
+								if (same_pc_count == 4 && !wedge_dumped)
+								{
+									wedge_dumped = true;
+									std::string dump;
+									for (int r = 0; r < 32; r++)
+									{
+										const u64 v = ppu.gpr[r];
+										fmt::append(dump, " r%d=%llx", r, v);
+										if (v >= 0x10000 && v < 0x40000000u && (v & 3) == 0 && vm::check_addr(static_cast<u32>(v), vm::page_readable, 16))
+										{
+											const u32 a = static_cast<u32>(v);
+											fmt::append(dump, "={%08x %08x %08x %08x}", vm::read32(a), vm::read32(a + 4), vm::read32(a + 8), vm::read32(a + 12));
+										}
+									}
+									trace("lab wedge-dump: main_thread parked at 0x%x, lr 0x%llx, gpr:%s", ppu.cia, ppu.lr, dump);
+								}
+							}
+							else
+							{
+								last_main_pc = ppu.cia;
+								same_pc_count = 0;
+								wedge_dumped = false;
+							}
+						}
 						if (ppus.size() < 600)
 						{
 							fmt::append(ppus, " [%s: 0x%x %s", ppu.get_name(), ppu.cia, ppu.current_function ? ppu.current_function : "");
