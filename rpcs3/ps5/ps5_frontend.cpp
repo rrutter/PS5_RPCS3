@@ -981,7 +981,9 @@ int run(const char* boot_path)
 					{
 						if (spus.size() < 400)
 						{
-							fmt::append(spus, " [%s pc 0x%x]", spu.get_name(), spu.pc);
+							// lab: mailbox occupancy too - a kick sitting unread in a kernel's inbox
+							const auto mb = +spu.ch_in_mbox.values;
+							fmt::append(spus, " [%s pc 0x%x mb w%u/c%u]", spu.get_name(), spu.pc, mb.waiting, mb.count);
 						}
 					});
 
@@ -1004,7 +1006,7 @@ int run(const char* boot_path)
 							{
 								if (const u32 st = static_cast<u32>(+sp->wklState1[w]))
 								{
-									fmt::append(spurst, " w%u:s%u(rc%u)", w, st, +sp->wklReadyCount1[w]);
+									fmt::append(spurst, " w%u:s%u(rc%u,st%x,ev%x)", w, st, +sp->wklReadyCount1[w], +sp->wklStatus1[w], +sp->wklEvent1[w]);
 								}
 							}
 						}
