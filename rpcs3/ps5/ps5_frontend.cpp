@@ -995,7 +995,7 @@ int run(const char* boot_path)
 						{
 							af >> std::hex >> saddr;
 						}
-						if (vm::check_addr(saddr, 0xd0))
+						if (vm::check_addr(saddr, vm::page_readable, 0xd0))
 						{
 							const auto sp = vm::get_super_ptr<CellSpurs>(saddr);
 							fmt::append(spurst, " | SPURS@%x enabled %08x sig %04x/%04x idle %u nspu %u |",
