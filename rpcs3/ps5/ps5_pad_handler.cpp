@@ -220,7 +220,8 @@ void ps5_pad_handler::process()
 		pad->m_sensors[0].m_value = motion(in.accel_x * 113.0f + 512.0f);
 		pad->m_sensors[1].m_value = motion(in.accel_y * -113.0f + 512.0f);
 		pad->m_sensors[2].m_value = motion(in.accel_z * -113.0f + 512.0f);
-		pad->m_sensors[3].m_value = motion(in.gyro_y * (123.0f / 90.0f) + 512.0f);
+		// Field-tested: left/right read inverted on the console - flip the yaw term
+		pad->m_sensors[3].m_value = motion(in.gyro_y * (-123.0f / 90.0f) + 512.0f);
 	}
 
 	connected_devices = connected;
