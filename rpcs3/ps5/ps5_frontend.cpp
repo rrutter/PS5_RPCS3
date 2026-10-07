@@ -28,6 +28,7 @@
 #include "Emu/Memory/vm.h"
 #include "Emu/Cell/PPUThread.h"
 #include "Emu/Cell/SPUThread.h"
+#include <fstream>
 #include "Emu/Cell/Modules/cellSpurs.h"
 #include "Emu/RSX/RSXThread.h"
 #include "Emu/Io/pad_config.h"
