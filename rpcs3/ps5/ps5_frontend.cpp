@@ -978,7 +978,11 @@ int run(const char* boot_path)
 					{
 						if (ppus.size() < 600)
 						{
-							fmt::append(ppus, " [%s: 0x%x %s]", ppu.get_name(), ppu.cia, ppu.current_function ? ppu.current_function : "");
+							fmt::append(ppus, " [%s: 0x%x %s", ppu.get_name(), ppu.cia, ppu.current_function ? ppu.current_function : "");
+							// lab: name the mutex a wedged thread is begging for (r3 = mutex id)
+							if (ppu.current_function && std::string_view(ppu.current_function).find("mutex") != std::string_view::npos)
+								fmt::append(ppus, "(id %u)", static_cast<u32>(ppu.gpr[3]));
+							fmt::append(ppus, "]");
 						}
 					});
 					std::string spus;
