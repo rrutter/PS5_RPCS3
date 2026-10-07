@@ -20,6 +20,8 @@ struct rpcs3_ps5_pad
 	std::uint32_t buttons; // rpcs3_ps5_button bits
 	float left_x, left_y, right_x, right_y; // -1..1, y down-positive
 	float l2, r2; // 0..1
+	float accel_x, accel_y, accel_z; // G, the pad's IMU
+	float gyro_x, gyro_y, gyro_z;    // angular velocity
 };
 
 enum rpcs3_ps5_button : std::uint32_t

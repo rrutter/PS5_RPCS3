@@ -64,7 +64,7 @@ bool ps5_pad_handler::bindPadToDevice(std::shared_ptr<Pad> pad)
 	pad->Init
 	(
 		CELL_PAD_STATUS_DISCONNECTED,
-		CELL_PAD_CAPABILITY_PS3_CONFORMITY | CELL_PAD_CAPABILITY_PRESS_MODE | CELL_PAD_CAPABILITY_HP_ANALOG_STICK | CELL_PAD_CAPABILITY_ACTUATOR,
+		CELL_PAD_CAPABILITY_PS3_CONFORMITY | CELL_PAD_CAPABILITY_PRESS_MODE | CELL_PAD_CAPABILITY_HP_ANALOG_STICK | CELL_PAD_CAPABILITY_ACTUATOR | CELL_PAD_CAPABILITY_SENSOR_MODE,
 		CELL_PAD_DEV_TYPE_STANDARD,
 		CELL_PAD_PCLASS_TYPE_STANDARD,
 		0, 0, 0,
@@ -212,6 +212,15 @@ void ps5_pad_handler::process()
 		pad->m_sticks[1].m_value = axis_to_ps3(in.left_y);
 		pad->m_sticks[2].m_value = axis_to_ps3(in.right_x);
 		pad->m_sticks[3].m_value = axis_to_ps3(in.right_y);
+
+		// The DualSense's IMU over the SIXAXIS sensors (RPCS3's own dualsense
+		// handler's mapping): accel in G * MOTION_ONE_G + rest, yaw to DS3 rate.
+		// (First cut of the signs: if a field reads inverted on console, flip it.)
+		const auto motion = [](float v) { return static_cast<u16>(std::clamp(std::lround(v), 0l, 1023l)); };
+		pad->m_sensors[0].m_value = motion(in.accel_x * 113.0f + 512.0f);
+		pad->m_sensors[1].m_value = motion(in.accel_y * -113.0f + 512.0f);
+		pad->m_sensors[2].m_value = motion(in.accel_z * -113.0f + 512.0f);
+		pad->m_sensors[3].m_value = motion(in.gyro_y * (123.0f / 90.0f) + 512.0f);
 	}
 
 	connected_devices = connected;
