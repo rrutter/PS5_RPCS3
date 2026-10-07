@@ -936,8 +936,11 @@ int run(const char* boot_path)
 	{
 		if (fs::is_file("/app0/rpcs3-spurs-trace.txt"))
 		{
-			logs::set_level("cellSpurs", logs::level::trace);
-			trace("frontend: cellSpurs at trace, verify: %d (want %d)", +logs::get_level("cellSpurs"), +logs::level::trace);
+			// lab: find-out mode - every channel at trace (the file listener
+			// keeps the tail, 256 MiB cap; the trace file keeps errors)
+			logs::set_level(".*", logs::level::trace);
+			trace("frontend: ALL channels at trace; cellSpurs verify: %d (want %d)",
+				static_cast<u32>(logs::get_level("cellSpurs")), static_cast<u32>(logs::level::trace));
 		}
 		trace("frontend: Emu.BootGame %s", boot_path);
 		if (const game_boot_result result = Emu.BootGame(boot_path, "", true); result != game_boot_result::no_errors)
