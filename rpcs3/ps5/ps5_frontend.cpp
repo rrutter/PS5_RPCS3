@@ -803,7 +803,10 @@ int run(const char* boot_path)
 	const bool spu_llvm = false;
 #endif
 	const ppu_decoder_type ppu_decoder = ppu_llvm ? ppu_decoder_type::llvm : ppu_decoder_type::_static;
-	const spu_decoder_type spu_decoder = spu_llvm ? spu_decoder_type::llvm : spu_decoder_type::_static;
+	// lab: /app0/rpcs3-asmjit.txt puts the SPU on the ASMJIT recompiler (no LLVM
+	// machinery - the console's LLVM SPU path crashes in the post-RA scheduler)
+	const bool spu_asmjit = fs::is_file("/app0/rpcs3-asmjit.txt");
+	const spu_decoder_type spu_decoder = spu_asmjit ? spu_decoder_type::asmjit : (spu_llvm ? spu_decoder_type::llvm : spu_decoder_type::_static);
 	if (g_cfg.core.ppu_decoder != ppu_decoder || g_cfg.core.spu_decoder != spu_decoder || g_cfg.core.llvm_precompilation)
 	{
 		g_cfg.core.ppu_decoder.set(ppu_decoder);
@@ -811,7 +814,7 @@ int run(const char* boot_path)
 		g_cfg.core.llvm_precompilation.set(false);
 		Emulator::SaveSettings(g_cfg.to_string(), "");
 	}
-	trace("config: PPU %s, SPU %s, no precompilation", ppu_llvm ? "recompiler (LLVM)" : "interpreter", spu_llvm ? "recompiler (LLVM)" : "interpreter");
+	trace("config: PPU %s, SPU %s, no precompilation", ppu_llvm ? "recompiler (LLVM)" : "interpreter", spu_asmjit ? "recompiler (ASMJIT)" : (spu_llvm ? "recompiler (LLVM)" : "interpreter"));
 
 	// The CPU LLVM compiles for: the host's own (empty), or the first word of
 	// /app0/rpcs3-llvm-cpu.txt ("x86-64", "x86-64-v2", "znver1"...). The PPU
