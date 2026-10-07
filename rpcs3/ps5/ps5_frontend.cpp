@@ -982,7 +982,7 @@ int run(const char* boot_path)
 						if (spus.size() < 400)
 						{
 							// lab: mailbox occupancy too - a kick sitting unread in a kernel's inbox
-							const auto mb = +spu.ch_in_mbox.values;
+							const auto& mb = spu.ch_in_mbox.values.raw();
 							fmt::append(spus, " [%s pc 0x%x mb w%u/c%u]", spu.get_name(), spu.pc, mb.waiting, mb.count);
 						}
 					});
