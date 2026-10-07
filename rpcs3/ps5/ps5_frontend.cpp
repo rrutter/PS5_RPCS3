@@ -938,24 +938,6 @@ int run(const char* boot_path)
 	int status = 0;
 	if (boot_path && *boot_path)
 	{
-		// lab self-test: the SPURS kick path writes through vm::light_op; write a
-		// sentinel that way and read it back three ways (super mirror, vm::read32,
-		// the raw base) - a divergence here is the whole freeze's root. Run right
-		// before BootGame, when the guest's memory is all mapped.
-		{
-			// vm::any is a search sentinel, invalid for alloc (it threw) - map a fresh page instead
-			const u32 ta = 0x0f000000;
-			vm::falloc(ta, 0x1000, vm::main);
-			auto& acell = vm::get_super_ptr<atomic_t<u32>>(ta)[0];
-			acell.store(0);
-			vm::light_op<true>(acell, [](atomic_t<u32>& v){ v.store(0xdeadbeef); });
-			const u32 r_super = +acell;
-			const u32 r_read32 = vm::read32(ta);
-			const u32 r_base = *reinterpret_cast<const u32*>(vm::g_base_addr + ta);
-			trace("lab: light_op self-test at guest 0x%x: super %08x | read32 %08x | base %08x (want deadbeef x3)",
-				ta, r_super, r_read32, r_base);
-		}
-
 		if (fs::is_file("/app0/rpcs3-spurs-trace.txt"))
 		{
 			// lab: find-out mode - every channel at trace (the file listener
