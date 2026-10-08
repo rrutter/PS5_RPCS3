@@ -5693,11 +5693,14 @@ s64 spu_thread::get_ch_value(u32 ch)
 		if (u32 out; ch_atomic_stat.try_read(out))
 		{
 			ch_atomic_stat.set_value(0, false);
+			spu_mega_log(*this, "atomicstat", out, 0, 0); // lab: the PUTLLC verdict
 			return out;
 		}
 
 		// Will stall infinitely
-		return read_channel(ch_atomic_stat);
+		const s64 v = read_channel(ch_atomic_stat);
+		spu_mega_log(*this, "atomicstat", static_cast<u32>(v), 0, 0); // lab
+		return v;
 	}
 
 	case MFC_RdListStallStat:
