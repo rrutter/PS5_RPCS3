@@ -731,6 +731,14 @@ class spu_llvm_recompiler : public spu_recompiler_base, public cpu_translator
 		{
 			load_inst->setMetadata(llvm::LLVMContext::MD_noalias, m_md_spu_context_domain);
 			load_inst->setMetadata(llvm::LLVMContext::MD_alias_scope, m_md_spu_memory_domain);
+
+			// lab: /app0/spu-volatile-ls.txt - volatile LS loads. The alias scoping
+			// above tells the optimizer that LS and channel/DMA memory never alias -
+			// which is FALSE for the SPURS kernel, whose poll loop reads LS bytes that
+			// the DMA machinery updates. Hoisted out of the loop, the read goes stale
+			// and the kernel spins forever. Volatile pins the read inside the loop.
+			static const bool volatile_ls = [] { return fs::is_file("/app0/spu-volatile-ls.txt"); }();
+			if (volatile_ls) load_inst->setVolatile(true);
 		}
 		else if (auto store_inst = llvm::dyn_cast<llvm::StoreInst>(inst))
 		{
