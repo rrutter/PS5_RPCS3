@@ -1481,6 +1481,10 @@ extern thread_local std::string(*g_tls_log_prefix)();
 // lab: the SPURS-kernel block trail, per thread (both engines feed it)
 std::atomic<u32> g_spu_trail_idx[8]{};
 u32 g_spu_trail_pc[8][64]{};
+// lab: SPU interrupt deliveries per kernel (handler entry = pc 0). The wedge
+// theory: JIT'd kernels never take their event interrupt, so the scheduling
+// core (invisible to static analysis - interrupt-entered code!) never runs.
+std::atomic<u32> g_spu_int_entries[8]{};
 
 // lab mega-trace (flag /app0/rpcs3-megatrace.txt): the ring of truth - every
 // interesting SPU op in sequence, dumped when a kernel parks. Floods by design.
@@ -1643,6 +1647,7 @@ void spu_thread::cpu_task()
 				const u32 ix = index & 7;
 				g_spu_trail_pc[ix][+g_spu_trail_idx[ix] % 64] = pc;
 				g_spu_trail_idx[ix]++;
+				if (pc == 0) g_spu_int_entries[ix]++; // lab: interrupt handler entry
 			}
 
 			if (_ref<u32>(pc) == 0x0u)
@@ -1683,6 +1688,7 @@ void spu_thread::cpu_task()
 				const u32 ix = index & 7;
 				g_spu_trail_pc[ix][+g_spu_trail_idx[ix] % 64] = pc;
 				g_spu_trail_idx[ix]++;
+				if (pc == 0) g_spu_int_entries[ix]++; // lab: interrupt handler entry
 			}
 
 			spu_runtime::g_interpreter(*this, _ptr<u8>(0), nullptr);

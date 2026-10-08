@@ -96,6 +96,7 @@ extern atomic_t<u64> g_ps5_frames_generated; // VKFrameGen.cpp: frames made betw
 // lab: the SPURS-kernel block trail + mega ring (defined in SPUThread.cpp)
 extern std::atomic<u32> g_spu_trail_idx[];
 extern u32 g_spu_trail_pc[][64];
+extern std::atomic<u32> g_spu_int_entries[];
 std::string spu_mega_dump_last(u32 n);
 std::string spu_mega_dump_since(u32 from);
 
@@ -1357,8 +1358,8 @@ int run(const char* boot_path)
 							// completion, stall channel, reservation address, event bits. A task
 							// parked with tm!=0 and ts==0 starves on a DMA that never completes.
 							const auto& mb = spu.ch_in_mbox.values.raw();
-							fmt::append(spus, " [%s pc 0x%x mb w%u/c%u tm %x ts %u ra %x ev %x]", spu.get_name(), spu.pc, mb.waiting, mb.count,
-								spu.ch_tag_mask, spu.ch_tag_stat.get_count(), spu.raddr, spu.ch_events.load().events);
+							fmt::append(spus, " [%s pc 0x%x mb w%u/c%u tm %x ts %u ra %x ev %x int %u]", spu.get_name(), spu.pc, mb.waiting, mb.count,
+								spu.ch_tag_mask, spu.ch_tag_stat.get_count(), spu.raddr, spu.ch_events.load().events, +g_spu_int_entries[spu.index & 7]);
 						}
 					});
 
