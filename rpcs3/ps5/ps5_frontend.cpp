@@ -97,6 +97,7 @@ extern atomic_t<u64> g_ps5_frames_generated; // VKFrameGen.cpp: frames made betw
 extern std::atomic<u32> g_spu_trail_idx[];
 extern u32 g_spu_trail_pc[][64];
 extern std::atomic<u32> g_spu_int_entries[];
+extern std::atomic<bool> g_spu_mega_armed;
 std::string spu_mega_dump_last(u32 n);
 std::string spu_mega_dump_since(u32 from);
 
@@ -1236,7 +1237,8 @@ int run(const char* boot_path)
 					// lab: with the mega flag up, drain the ring into the trace every pulse
 					// (the FULL history in slices - the wedge phase, not just the tail)
 					static u32 mega_watermark = 0;
-					if (fs::is_file("/app0/rpcs3-megatrace.txt"))
+					// lab: the file flag OR the runtime toggle (L3+R3) - either arms the drain
+					if (fs::is_file("/app0/rpcs3-megatrace.txt") || g_spu_mega_armed.load(std::memory_order_relaxed))
 					{
 						const std::string slice = spu_mega_dump_since(mega_watermark);
 						mega_watermark += static_cast<u32>(std::count(slice.begin(), slice.end(), '\n'));
