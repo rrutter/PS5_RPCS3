@@ -180,6 +180,23 @@ void ps5_pad_handler::process()
 		// while they are held together
 		u32 buttons = in.buttons;
 		constexpr u32 home_combo = RPCS3_PS5_L1 | RPCS3_PS5_R1 | RPCS3_PS5_SELECT;
+
+		// lab: L3+R3 toggles the deep SPU hooks at runtime (g_spu_mega_armed) -
+		// boot clean, keep the game's timing pure, then arm the flood right
+		// before the moment under study. The toggle is invisible to the game.
+		{
+			extern std::atomic<bool> g_spu_mega_armed;
+			constexpr u32 lab_combo = RPCS3_PS5_L3 | RPCS3_PS5_R3;
+			static bool combo_was = false;
+			const bool combo_now = (buttons & lab_combo) == lab_combo;
+			if (combo_now && !combo_was)
+			{
+				const bool armed = !g_spu_mega_armed.load(std::memory_order_relaxed);
+				g_spu_mega_armed.store(armed, std::memory_order_relaxed);
+				input_log.notice("lab: deep SPU hooks %s", armed ? "ARMED (the flood is on)" : "DISARMED");
+			}
+			combo_was = combo_now;
+		}
 		if ((buttons & home_combo) == home_combo)
 		{
 			buttons = (buttons & ~home_combo) | RPCS3_PS5_PS;

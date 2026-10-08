@@ -1492,13 +1492,16 @@ struct spu_mega_ent { u32 seq; char txt[120]; };
 spu_mega_ent g_spu_mega[4096]{};
 std::atomic<u32> g_spu_mega_idx{0};
 
-// lab: boot-time static now - the game's load watchdog ("Timeout Call" in
-// main's registers) fired under the flood; even the 1s re-check cost a clock
-// read per channel op. Flag read ONCE at first use; off = zero tax.
+// lab: the mega ring's arming is a PLAIN ATOMIC now - armed three ways:
+// the flag file at boot, or L3+R3 on the pad at runtime (the pad handler
+// toggles it), so the flood only runs during the window we care about.
+// off = one relaxed atomic load per call = the game keeps its timing.
+std::atomic<bool> g_spu_mega_armed{false};
+
 static bool spurs_mega_on()
 {
-	static const bool on = fs::is_file("/app0/rpcs3-megatrace.txt");
-	return on;
+	static const bool boot_flag = fs::is_file("/app0/rpcs3-megatrace.txt");
+	return boot_flag || g_spu_mega_armed.load(std::memory_order_relaxed);
 }
 
 void spu_mega_log(const spu_thread& spu, const char* what, u32 a, u32 b, u32 c)
