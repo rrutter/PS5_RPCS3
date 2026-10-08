@@ -1492,16 +1492,12 @@ struct spu_mega_ent { u32 seq; char txt[120]; };
 spu_mega_ent g_spu_mega[4096]{};
 std::atomic<u32> g_spu_mega_idx{0};
 
+// lab: boot-time static now - the game's load watchdog ("Timeout Call" in
+// main's registers) fired under the flood; even the 1s re-check cost a clock
+// read per channel op. Flag read ONCE at first use; off = zero tax.
 static bool spurs_mega_on()
 {
-	static bool on = false;
-	static std::chrono::steady_clock::time_point next{};
-	const auto now = std::chrono::steady_clock::now();
-	if (now >= next)
-	{
-		next = now + std::chrono::seconds(1);
-		on = fs::is_file("/app0/rpcs3-megatrace.txt");
-	}
+	static const bool on = fs::is_file("/app0/rpcs3-megatrace.txt");
 	return on;
 }
 
@@ -2140,18 +2136,10 @@ void spu_thread::push_snr(u32 number, u32 value)
 	});
 }
 
-// lab: shared spy gate - re-checks the flag once a second (a first-call static
-// can resolve before /app0 answers); window = the SPURS instance +/- 4KB
+// lab: same treatment - boot-time static (see spurs_mega_on's comment)
 static bool spurs_spy_on()
 {
-	static bool on = false;
-	static std::chrono::steady_clock::time_point next{};
-	const auto now = std::chrono::steady_clock::now();
-	if (now >= next)
-	{
-		next = now + std::chrono::seconds(1);
-		on = fs::is_file("/app0/spurs-dma-trace.txt");
-	}
+	static const bool on = fs::is_file("/app0/spurs-dma-trace.txt");
 	return on;
 }
 
