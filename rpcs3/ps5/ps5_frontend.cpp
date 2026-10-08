@@ -1455,7 +1455,15 @@ int run(const char* boot_path)
 								{
 									vm::reservation_notifier_notify(saddr, 0);
 									vm::reservation_notifier_notify(saddr + 0x80, 0);
-									trace("lab: re-kick nudge (runnable work + frozen flips x%d)", frozen_pulses);
+									// lab v2: the reservation bell missed them (they wait on EVENTS,
+									// not reservations) - ring the kernels' doorbells directly.
+									// LR is in their event mask (0x10400); set_events notifies.
+									idm::select<named_thread<spu_thread>>([&](u32, spu_thread& spu)
+									{
+										if (std::string_view(spu.get_name()).find("CellSpursKernel") != std::string_view::npos)
+											spu.set_events(SPU_EVENT_LR);
+									});
+									trace("lab: re-kick nudge x%d + kernel doorbells rung", frozen_pulses);
 								}
 							}
 						}
