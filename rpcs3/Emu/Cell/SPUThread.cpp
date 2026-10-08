@@ -1889,16 +1889,6 @@ void spu_thread::init_spu_decoder()
 #else
 	const spu_decoder_type spu_decoder = g_cfg.core.spu_decoder;
 
-	// lab: SPURS kernels always interpret. Their scheduling core is reached by
-	// paths the JITs' static analysis never links (the 0xcc8-0x1230 build gap),
-	// so under JIT they poll the workload-state line forever without dispatching
-	// (the load-in wedge). The kernels are tiny bookkeeping loops; the game's
-	// tasks keep the recompiler's speed. Interpreter kernels, JIT workloads.
-	if (group && group->name.ends_with("CellSpursKernelGroup"))
-	{
-		return; // jit stays null -> the interpreter runs this thread
-	}
-
 #if defined(ARCH_X64)
 	if (spu_decoder == spu_decoder_type::asmjit)
 	{
