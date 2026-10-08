@@ -1091,6 +1091,29 @@ int run(const char* boot_path)
 			trace("frontend: booted; running until the emulation stops");
 			g_booted = true;
 
+			// lab: the hitch watch - sample flips at 30ms, log gaps over 80ms with
+			// the clock, so FMV hiccups get timestamps instead of vibes
+			named_thread hitch_watch("PS5 Hitch Watch", []()
+			{
+				u32 last_flips = 0;
+				u64 last_flip_time = 0;
+				while (thread_ctrl::state() != thread_state::aborting)
+				{
+					thread_ctrl::wait_for(30'000);
+					const auto render = rsx::get_current_renderer();
+					if (!render) continue;
+					const u32 flips = render->int_flip_index;
+					const u64 now = get_system_time();
+					if (flips != last_flips)
+					{
+						if (last_flips && now - last_flip_time > 80'000)
+							trace("hitch: %llu ms frame gap (flips %u -> %u)", (now - last_flip_time) / 1000, last_flips, flips);
+						last_flips = flips;
+						last_flip_time = now;
+					}
+				}
+			});
+
 			// Every five seconds, in the trace: the emulation's state, the frames
 			// RSX flipped, and where the PPU threads are, to tell a stall from slow
 			named_thread status("PS5 Status", []()
