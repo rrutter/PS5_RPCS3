@@ -1004,12 +1004,18 @@ static const bool s_tsc_freq_evaluated = []() -> bool
 
 		printf("[TSC calibration] Kernel reports the TSC is reliable.\n");
 #else
+#ifndef __PROSPERO__
 		if (utils::get_cpu_brand().find("Ryzen") != umax)
 		{
 			// MacOS is arm-native these days and I don't know much about BSD to fix this if it's an issue. (kd-11)
 			// Having this check only for Ryzen is broken behavior - other CPUs can also have this problem.
 			return 0;
 		}
+#endif
+		// lab: on the console (PROSPERO) the Linux sysfs check fails AND the APU isn't
+		// branded Ryzen, so get_tsc_freq() always returned 0 - every TSC-calibrated
+		// wait/spin/timing path ran blind. The console's Zen2 has an invariant TSC;
+		// skip the bail and let the CLOCK_MONOTONIC measurement below calibrate it.
 #endif
 
 		constexpr ullong timer_freq = 1'000'000'000;
