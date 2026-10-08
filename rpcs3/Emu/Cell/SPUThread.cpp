@@ -1630,13 +1630,7 @@ void spu_thread::cpu_task()
 		}
 	}
 
-	// lab: Route A v2 - SPURS kernels run the interpreter loop even with a jit
-	// object live (the v1 gate nulled jit and broke kernel startup - the fork's
-	// SPURS init is delicate). The kernels' scheduling core is invisible to the
-	// JITs' analysis (the 0xcc8-0x1230 gap); the game's tasks keep the recompiler.
-	const bool lab_kernel_interp = group && group->name.ends_with("CellSpursKernelGroup"sv);
-
-	if (jit && !lab_kernel_interp)
+	if (jit)
 	{
 		while (true)
 		{
