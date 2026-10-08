@@ -1212,8 +1212,21 @@ int run(const char* boot_path)
 										fmt::append(trail, " %x", g_spu_trail_pc[ix][t % 64]);
 									// and the ring of truth: the last 240 SPU ops across all threads
 									const std::string mega = spu_mega_dump_last(240);
+									// lab: the three-view line comparison - the kernel's LS copy of the
+									// struct line (0x2d80), its reservation buffer, and the live line.
+									// Divergence = the JIT'd kernel is deciding on a lie.
+									std::string lsbuf, rdat, livebuf;
+									const u32* rdwords = reinterpret_cast<const u32*>(spu.rdata);
+									const bool live_ok = vm::check_addr(0x5631a380, vm::page_readable, 32);
+									for (int w = 0; w < 8; w++)
+									{
+										fmt::append(lsbuf, " %08x", spu._ref<u32>(0x2d80 + w * 4));
+										fmt::append(rdat, " %08x", rdwords[w]);
+										if (live_ok) fmt::append(livebuf, " %08x", vm::read32(0x5631a380 + w * 4));
+									}
 									trace("lab kpark-dump: %s pc 0x%x state %x srr0 %x intr %d | ls:%s | trail:%s | mega:%s", spu.get_name(), spu.pc,
 										+spu.state, spu.srr0, spu.interrupts_enabled ? 1 : 0, words, trail, mega);
+									trace("lab kpark-line: LS[2d80]:%s | rdata:%s | live[+80]:%s", lsbuf, rdat, livebuf);
 								}
 							}
 							else
