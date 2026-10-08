@@ -2236,6 +2236,8 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 
 			if (offset + args.size <= SPU_LS_SIZE) // LS access
 			{
+				// lab: watch inter-SPU LS writes - the kernel's kick rides this rail
+				if (!is_get) spu_mega_log(*_this, "lswrite", offset, args.size, 0);
 				// redirect access
 				if (auto ptr = spu.ls + offset; is_get)
 					src = ptr;
@@ -2244,6 +2246,7 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 			}
 			else if (!is_get && args.size == 4 && (offset == SYS_SPU_THREAD_SNR1 || offset == SYS_SPU_THREAD_SNR2))
 			{
+				spu_mega_log(*_this, "snrkick", offset, +_this->_ref<u32>(lsa), 0); // lab
 				spu.push_snr(SYS_SPU_THREAD_SNR2 == offset, args.cmd != MFC_SDCRZ_CMD ? +_this->_ref<u32>(lsa) : 0);
 				return;
 			}
