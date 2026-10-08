@@ -1320,6 +1320,11 @@ int run(const char* boot_path)
 									std::string words;
 									for (u32 w = 0; w < 8; w++)
 										fmt::append(words, " %08x", spu._ref<u32>(spu.pc + w * 4));
+									// lab: the exit link! gpr0 holds the workload's return-to-kernel
+									// address - if it is garbage under JIT, the exit branch dies silently
+									std::string regs;
+									for (int r = 0; r < 8; r++)
+										fmt::append(regs, " r%d=%08x", r, spu.gpr[r]._u32[3]);
 									// lab: the parked kernel's own block trail (last 32 entries)
 									std::string trail;
 									const u32 ix = spu.index & 7;
@@ -1340,8 +1345,8 @@ int run(const char* boot_path)
 										fmt::append(rdat, " %08x", rdwords[w]);
 										if (live_ok) fmt::append(livebuf, " %08x", vm::read32(0x5631a380 + w * 4));
 									}
-									trace("lab kpark-dump: %s pc 0x%x state %x srr0 %x intr %d | ls:%s | trail:%s | mega:%s", spu.get_name(), spu.pc,
-										+spu.state, spu.srr0, spu.interrupts_enabled ? 1 : 0, words, trail, mega);
+									trace("lab kpark-dump: %s pc 0x%x state %x srr0 %x intr %d | ls:%s | gpr:%s | trail:%s | mega:%s", spu.get_name(), spu.pc,
+										+spu.state, spu.srr0, spu.interrupts_enabled ? 1 : 0, words, regs, trail, mega);
 									trace("lab kpark-line: LS[2d80]:%s | rdata:%s | live[+80]:%s", lsbuf, rdat, livebuf);
 								}
 							}
