@@ -4346,7 +4346,8 @@ u32 evaluate_spin_optimization(std::span<u8> stats, u64 evaluate_time, const cfg
 
 bool spu_thread::process_mfc_cmd()
 {
-	spu_mega_log(*this, "mfc", ch_mfc_cmd.cmd, ch_mfc_cmd.eal, ch_mfc_cmd.size | (ch_mfc_cmd.tag << 16)); // lab
+	// lab: lsa too - the JIT put an LSA value in the EAL slot once (the wedge's EA)
+	spu_mega_log(*this, "mfc", ch_mfc_cmd.cmd, ch_mfc_cmd.lsa, ch_mfc_cmd.eal);
 	// Stall infinitely if MFC queue is full
 	while (mfc_size >= 16) [[unlikely]]
 	{
