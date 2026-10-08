@@ -4435,7 +4435,14 @@ bool spu_thread::process_mfc_cmd()
 			spu_log.trace(u8"GETLLAR after fail: addr=0x%x, time=%u c", last_faddr, (perf0.get() - last_ftsc));
 		}
 
-		if (addr == last_faddr && perf0.get() - last_ftsc < 1000 && (vm::reservation_acquire(addr) & -128) == last_ftime)
+		// lab: /app0/rpcs3-nogetllarcache.txt disables the same-address fast path.
+		// At JIT speed a polling kernel's GETLLARs land inside the 1000-cycle window
+		// forever and get served the CACHED rdata - while PPU-side plain stores to the
+		// struct never bump the reservation, so the cache never expires. The kernel
+		// reads frozen bytes, never sees new work, never dispatches. (The interpreter
+		// is simply too slow to fit in the window - which is why it never wedges.)
+		static const bool no_getllar_cache = fs::is_file("/app0/rpcs3-nogetllarcache.txt");
+		if (!no_getllar_cache && addr == last_faddr && perf0.get() - last_ftsc < 1000 && (vm::reservation_acquire(addr) & -128) == last_ftime)
 		{
 			rtime = last_ftime;
 			raddr = last_faddr;
