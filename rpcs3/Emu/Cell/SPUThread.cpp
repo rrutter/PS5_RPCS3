@@ -1470,10 +1470,49 @@ void spu_thread::cpu_return()
 
 extern thread_local std::string(*g_tls_log_prefix)();
 
-// lab: the SPURS-kernel block trail (index into a ring; both the JIT and the
-// interpreter loops feed it - the interpreter's g_interpreter dispatches blocks too)
-std::atomic<u32> g_spu_trail_idx{0};
-u32 g_spu_trail_pc[128]{};
+// lab: the SPURS-kernel block trail, per thread (both engines feed it)
+std::atomic<u32> g_spu_trail_idx[8]{};
+u32 g_spu_trail_pc[8][64]{};
+
+// lab mega-trace (flag /app0/rpcs3-megatrace.txt): the ring of truth - every
+// interesting SPU op in sequence, dumped when a kernel parks. Floods by design.
+struct spu_mega_ent { u32 seq; char txt[120]; };
+spu_mega_ent g_spu_mega[4096]{};
+std::atomic<u32> g_spu_mega_idx{0};
+
+static bool spurs_mega_on()
+{
+	static bool on = false;
+	static std::chrono::steady_clock::time_point next{};
+	const auto now = std::chrono::steady_clock::now();
+	if (now >= next)
+	{
+		next = now + std::chrono::seconds(1);
+		on = fs::is_file("/app0/rpcs3-megatrace.txt");
+	}
+	return on;
+}
+
+void spu_mega_log(const spu_thread& spu, const char* what, u32 a, u32 b, u32 c)
+{
+	if (!spurs_mega_on()) return;
+	const u32 i = g_spu_mega_idx.fetch_add(1);
+	auto& e = g_spu_mega[i % 4096];
+	e.seq = i;
+	const std::string n = spu.get_name();
+	std::snprintf(e.txt, sizeof(e.txt), "%-17.17s pc %05x | %s %x %x %x", n.c_str(), spu.pc, what, a, b, c);
+}
+
+// lab: the ring's last n entries, formatted (the frontend's park dump calls this)
+std::string spu_mega_dump_last(u32 n)
+{
+	std::string out;
+	const u32 total = +g_spu_mega_idx;
+	const u32 from = total > n ? total - n : 0;
+	for (u32 t = from; t < total; t++)
+		fmt::append(out, "\n  mega[%u] %s", t, g_spu_mega[t % 4096].txt);
+	return out;
+}
 
 void spu_thread::cpu_task()
 {
@@ -1562,12 +1601,12 @@ void spu_thread::cpu_task()
 					break;
 			}
 
-			// lab: block-entry trail for SPURS kernel0 (the JIT-wedge hunt): each
-			// dispatch's pc into a ring; the frontend dumps it when the kernel parks
-			if (spurs_addr != invalid_spurs && index == 0)
+			// lab: block-entry trail per SPURS kernel (the JIT-wedge hunt)
+			if (spurs_addr != invalid_spurs)
 			{
-				g_spu_trail_pc[+g_spu_trail_idx % 128] = pc;
-				g_spu_trail_idx++;
+				const u32 ix = index & 7;
+				g_spu_trail_pc[ix][+g_spu_trail_idx[ix] % 64] = pc;
+				g_spu_trail_idx[ix]++;
 			}
 
 			if (_ref<u32>(pc) == 0x0u)
@@ -1603,10 +1642,11 @@ void spu_thread::cpu_task()
 			}
 
 			// lab: the trail too (interpreter = the gold reference)
-			if (spurs_addr != invalid_spurs && index == 0)
+			if (spurs_addr != invalid_spurs)
 			{
-				g_spu_trail_pc[+g_spu_trail_idx % 128] = pc;
-				g_spu_trail_idx++;
+				const u32 ix = index & 7;
+				g_spu_trail_pc[ix][+g_spu_trail_idx[ix] % 64] = pc;
+				g_spu_trail_idx[ix]++;
 			}
 
 			spu_runtime::g_interpreter(*this, _ptr<u8>(0), nullptr);
@@ -3455,6 +3495,7 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 	// lab: the conditional atomic, same watch
 	if ((args.eal & -128) - 0x5631a000u < 0x1000u && spurs_spy_on())
 		spu_log.notice("spurs-atomic: PUTLLC @%x (off %+d) raddr %x", args.eal, args.eal - 0x5631a300, raddr);
+	spu_mega_log(*this, "putllc", args.eal, raddr, 0); // lab mega-trace
 	perf_meter<"PUTLLC-"_u64> perf0;
 	perf_meter<"PUTLLC+"_u64> perf1 = perf0;
 
@@ -3795,6 +3836,7 @@ void spu_thread::do_putlluc(const spu_mfc_cmd& args)
 			addr + 0x73 == 0x5631a300 + 0x73 ? s[0x73] : 0,
 			s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]);
 	}
+	spu_mega_log(*this, "putlluc", args.eal, raddr, 0); // lab mega-trace
 
 	if (raddr && addr == raddr && g_cfg.core.spu_accurate_reservations)
 	{
@@ -4304,6 +4346,7 @@ u32 evaluate_spin_optimization(std::span<u8> stats, u64 evaluate_time, const cfg
 
 bool spu_thread::process_mfc_cmd()
 {
+	spu_mega_log(*this, "mfc", ch_mfc_cmd.cmd, ch_mfc_cmd.eal, ch_mfc_cmd.size | (ch_mfc_cmd.tag << 16)); // lab
 	// Stall infinitely if MFC queue is full
 	while (mfc_size >= 16) [[unlikely]]
 	{
@@ -4346,6 +4389,7 @@ bool spu_thread::process_mfc_cmd()
 		perf_meter<"GETLLAR"_u64> perf0;
 
 		const u32 addr = ch_mfc_cmd.eal & -128;
+		spu_mega_log(*this, "getllar", addr, 0, 0); // lab
 		const auto& data = vm::_ref<spu_rdata_t>(addr);
 
 		if (addr == last_faddr)
@@ -5486,6 +5530,9 @@ u32 spu_thread::get_ch_count(u32 ch)
 
 s64 spu_thread::get_ch_value(u32 ch)
 {
+	// lab mega-trace: the wait-relevant reads (event/tag/atomic/mailbox channels)
+	if (ch == SPU_RdEventStat || ch == MFC_RdTagStat || ch == MFC_RdAtomicStat || ch == SPU_RdInMbox || ch == SPU_WrOutMbox || ch == SPU_WrOutIntrMbox)
+		spu_mega_log(*this, "rdch", ch, 0, 0);
 	if (ch < 128) spu_log.trace("get_ch_value(ch=%s)", spu_ch_name[ch]);
 
 	auto read_channel = [&](spu_channel& channel) -> s64
@@ -6108,6 +6155,7 @@ s64 spu_thread::get_ch_value(u32 ch)
 
 bool spu_thread::set_ch_value(u32 ch, u32 value)
 {
+	spu_mega_log(*this, "wrch", ch, value, 0); // lab mega-trace (self-gating)
 	if (ch < 128) spu_log.trace("set_ch_value(ch=%s, value=0x%x)", spu_ch_name[ch], value);
 
 	switch (ch)

@@ -89,9 +89,10 @@ const char* ps5_localized_string(localized_string_id id);
 // Emu/RSX/Overlays/overlay_utils.cpp
 std::u32string utf8_to_u32string(std::string_view utf8_string);
 
-// lab: the SPURS-kernel block trail (defined at file scope in SPUThread.cpp)
-extern std::atomic<u32> g_spu_trail_idx;
-extern u32 g_spu_trail_pc[];
+// lab: the SPURS-kernel block trail + mega ring (defined in SPUThread.cpp)
+extern std::atomic<u32> g_spu_trail_idx[];
+extern u32 g_spu_trail_pc[][64];
+std::string spu_mega_dump_last(u32 n);
 
 namespace
 {
@@ -1191,13 +1192,16 @@ int run(const char* boot_path)
 									std::string words;
 									for (u32 w = 0; w < 8; w++)
 										fmt::append(words, " %08x", spu._ref<u32>(spu.pc + w * 4));
-									// lab: the block trail - the last 32 blocks kernel0 entered
+									// lab: the parked kernel's own block trail (last 32 entries)
 									std::string trail;
-									const u32 end = +g_spu_trail_idx;
+									const u32 ix = spu.index & 7;
+									const u32 end = +g_spu_trail_idx[ix];
 									for (u32 t = end > 32 ? end - 32 : 0; t < end; t++)
-										fmt::append(trail, " %x", g_spu_trail_pc[t % 128]);
-									trace("lab kpark-dump: %s pc 0x%x state %x srr0 %x intr %d | ls:%s | trail:%s", spu.get_name(), spu.pc,
-										+spu.state, spu.srr0, spu.interrupts_enabled ? 1 : 0, words, trail);
+										fmt::append(trail, " %x", g_spu_trail_pc[ix][t % 64]);
+									// and the ring of truth: the last 240 SPU ops across all threads
+									const std::string mega = spu_mega_dump_last(240);
+									trace("lab kpark-dump: %s pc 0x%x state %x srr0 %x intr %d | ls:%s | trail:%s | mega:%s", spu.get_name(), spu.pc,
+										+spu.state, spu.srr0, spu.interrupts_enabled ? 1 : 0, words, trail, mega);
 								}
 							}
 							else
