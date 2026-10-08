@@ -1399,6 +1399,10 @@ int run(const char* boot_path)
 							// lab v2: print EXACTLY what the kernel's wake equation reads
 							// (wklFlag | wklSignal | readyCount != 0 && readyCount+idle > contention)
 							// both ready banks, both contention triples, the mode flag - no interpretation
+							// lab v3: the same words through the OTHER vm view - if raw32 disagrees
+							// with the super-ptr fields above, the console double-maps the struct
+							fmt::append(spurst, " raw32[+00] %08x raw32[+80] %08x |",
+								vm::read32(saddr), vm::read32(saddr + 0x80));
 							fmt::append(spurst, " | SPURS@%x flags %02x sig %04x/%04x flag %u/rcv %u idle %u nspu %u |",
 								saddr, +sp->flags1, +sp->wklSignal1, +sp->wklSignal2, +sp->wklFlag.flag, +sp->wklFlagReceiver, +sp->spuIdling, +sp->nSpus);
 							for (u32 w = 0; w < 16; w++)
