@@ -5218,8 +5218,9 @@ public:
 		}
 		case MFC_LSA:
 		{
-			set_reg_fixed(s_reg_mfc_lsa, val.value);
-			return;
+			// lab: bypass the JIT's MFC parameter caching - on this console the
+			// staging misrouted LSA into EAL (the load-in wedge). Slow and true.
+			break;
 		}
 		case MFC_EAH:
 		{
@@ -5237,21 +5238,19 @@ public:
 		}
 		case MFC_EAL:
 		{
-			set_reg_fixed(s_reg_mfc_eal, val.value);
-			return;
+			break; // lab: same bypass
 		}
 		case MFC_Size:
 		{
-			set_reg_fixed(s_reg_mfc_size, trunc<u16>(val).eval(m_ir));
-			return;
+			break; // lab: same bypass
 		}
 		case MFC_TagID:
 		{
-			set_reg_fixed(s_reg_mfc_tag, trunc<u8>(val & 0x1f).eval(m_ir));
-			return;
+			break; // lab: same bypass
 		}
 		case MFC_Cmd:
 		{
+			break; // lab: bypass ALL inline MFC emission - every command via the helper
 			// Prevent store elimination (TODO)
 			m_block->store_context_ctr[s_reg_mfc_eal]++;
 			m_block->store_context_ctr[s_reg_mfc_lsa]++;
