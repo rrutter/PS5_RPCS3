@@ -1327,6 +1327,12 @@ int run(const char* boot_path)
 									std::string regs;
 									for (int r = 0; r < 8; r++)
 										fmt::append(regs, " r%d=%08x", r, spu.gpr[r]._u32[3]);
+									// lab: the gap's door - LS words around 0xcc8 (the last built
+									// block's tail, where execution should branch into the
+									// never-compiled scheduling core at 0xd24)
+									std::string door;
+									for (u32 w = 0xcc0; w < 0xd30; w += 4)
+										fmt::append(door, " %x:%08x", w, spu._ref<u32>(w));
 									// lab: the parked kernel's own block trail (last 32 entries)
 									std::string trail;
 									const u32 ix = spu.index & 7;
@@ -1350,6 +1356,7 @@ int run(const char* boot_path)
 									trace("lab kpark-dump: %s pc 0x%x state %x srr0 %x intr %d | ls:%s | gpr:%s | trail:%s | mega:%s", spu.get_name(), spu.pc,
 										+spu.state, spu.srr0, spu.interrupts_enabled ? 1 : 0, words, regs, trail, mega);
 									trace("lab kpark-line: LS[2d80]:%s | rdata:%s | live[+80]:%s", lsbuf, rdat, livebuf);
+									trace("lab gap-door:%s", door);
 								}
 							}
 							else
