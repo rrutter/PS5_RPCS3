@@ -1045,6 +1045,10 @@ s32 _spurs::stop_event_helper(ppu_thread& ppu, vm::ptr<CellSpurs> spurs)
 
 s32 _spurs::signal_to_handler_thread(ppu_thread& ppu, vm::ptr<CellSpurs> spurs)
 {
+	// lab: the signal leg of the wake chain
+	if (fs::is_file("/app0/spurs-dump.txt"))
+		cellSpurs.notice("lab wake: signal_to_handler_thread (lwcond signal fires)");
+
 	ensure(ppu_execute<&sys_lwmutex_lock>(ppu, spurs.ptr(&CellSpurs::mutex), 0) == 0);
 	ensure(ppu_execute<&sys_lwcond_signal>(ppu, spurs.ptr(&CellSpurs::cond)) == 0);
 	ensure(ppu_execute<&sys_lwmutex_unlock>(ppu, spurs.ptr(&CellSpurs::mutex)) == 0);
@@ -2751,6 +2755,10 @@ s32 cellSpursRemoveWorkload(ppu_thread& ppu, vm::ptr<CellSpurs> spurs, u32 wid)
 s32 cellSpursWakeUp(ppu_thread& ppu, vm::ptr<CellSpurs> spurs)
 {
 	cellSpurs.warning("cellSpursWakeUp(spurs=*0x%x)", spurs);
+
+	// lab: the wake chain under a microscope - did the game kick? (dump flag rides)
+	if (fs::is_file("/app0/spurs-dump.txt"))
+		cellSpurs.notice("lab wake: WakeUp called, handlerWaiting=%u", +spurs->handlerWaiting);
 
 	if (!spurs)
 	{
