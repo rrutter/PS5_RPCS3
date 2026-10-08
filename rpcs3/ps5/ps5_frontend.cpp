@@ -93,6 +93,7 @@ std::u32string utf8_to_u32string(std::string_view utf8_string);
 extern std::atomic<u32> g_spu_trail_idx[];
 extern u32 g_spu_trail_pc[][64];
 std::string spu_mega_dump_last(u32 n);
+std::string spu_mega_dump_since(u32 from);
 
 namespace
 {
@@ -1116,6 +1117,17 @@ int run(const char* boot_path)
 						continue;
 					}
 					const auto render = rsx::get_current_renderer();
+
+					// lab: with the mega flag up, drain the ring into the trace every pulse
+					// (the FULL history in slices - the wedge phase, not just the tail)
+					static u32 mega_watermark = 0;
+					if (fs::is_file("/app0/rpcs3-megatrace.txt"))
+					{
+						const std::string slice = spu_mega_dump_since(mega_watermark);
+						mega_watermark += static_cast<u32>(std::count(slice.begin(), slice.end(), '\n'));
+						if (!slice.empty())
+							trace("mega-slice:%s", slice);
+					}
 
 					// The busiest of the PS3's threads over these five seconds
 					if (const std::string busiest = take_thread_loads(); !busiest.empty())

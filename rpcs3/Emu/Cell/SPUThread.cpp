@@ -1503,6 +1503,19 @@ void spu_mega_log(const spu_thread& spu, const char* what, u32 a, u32 b, u32 c)
 	std::snprintf(e.txt, sizeof(e.txt), "%-17.17s pc %05x | %s %x %x %x", n.c_str(), spu.pc, what, a, b, c);
 }
 
+// lab: entries [from, now) - the frontend drains the ring every status pulse
+// (the full history, not just the tail; ring overwrites beyond 4096 are skipped)
+std::string spu_mega_dump_since(u32 from)
+{
+	std::string out;
+	const u32 total = +g_spu_mega_idx;
+	u32 start = from < total ? from : total;
+	if (total - start > 4000) start = total - 4000;
+	for (u32 t = start; t < total; t++)
+		fmt::append(out, "\n  mega[%u] %s", t, g_spu_mega[t % 4096].txt);
+	return out;
+}
+
 // lab: the ring's last n entries, formatted (the frontend's park dump calls this)
 std::string spu_mega_dump_last(u32 n)
 {
