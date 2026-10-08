@@ -2874,6 +2874,15 @@ s32 cellSpursReadyCountStore(ppu_thread& /*ppu*/, vm::ptr<CellSpurs> spurs, u32 
 		v.release(static_cast<u8>(value));
 	});
 
+	// lab: does the store LAND? (the wedge: workloads runnable but readyCount
+	// stays 0 - either this never gets called, it early-returns, or the write
+	// evaporates in the console's vm). readback immediately, behind the dump flag.
+	if (fs::is_file("/app0/spurs-dump.txt"))
+	{
+		const u32 rb = +spurs->readyCount(wid);
+		cellSpurs.notice("lab rcs: wid %u value %u -> readback %u (state %u)", wid, value, rb, +spurs->wklState(wid));
+	}
+
 	return CELL_OK;
 }
 
