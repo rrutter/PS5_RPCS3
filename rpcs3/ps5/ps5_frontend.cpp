@@ -1327,6 +1327,12 @@ int run(const char* boot_path)
 									std::string regs;
 									for (int r = 0; r < 8; r++)
 										fmt::append(regs, " r%d=%08x", r, spu.gpr[r]._u32[3]);
+									// lab: the wedged kernel's LS context (0x40-0x180) - the poll loop
+									// reads flags here that never update under JIT; compare vs the
+									// healthy idle baseline (all zeros at rest)
+									std::string ctx;
+									for (u32 w = 0x40; w < 0x180; w += 4)
+										fmt::append(ctx, " %x:%08x", w, spu._ref<u32>(w));
 									// lab: the gap's door - LS words around 0xcc8 (the last built
 									// block's tail, where execution should branch into the
 									// never-compiled scheduling core at 0xd24)
@@ -1365,6 +1371,7 @@ int run(const char* boot_path)
 										+spu.state, spu.srr0, spu.interrupts_enabled ? 1 : 0, words, regs, trail, mega);
 									trace("lab kpark-line: LS[2d80]:%s | rdata:%s | live[+80]:%s", lsbuf, rdat, livebuf);
 									trace("lab gap-door:%s", door);
+									trace("lab kernel-ctx:%s", ctx);
 								}
 							}
 							else
