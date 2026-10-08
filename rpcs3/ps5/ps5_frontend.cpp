@@ -1427,13 +1427,35 @@ int run(const char* boot_path)
 								vm::read32(saddr), vm::read32(saddr + 0x80));
 							fmt::append(spurst, " | SPURS@%x flags %02x sig %04x/%04x flag %u/rcv %u idle %u nspu %u |",
 								saddr, +sp->flags1, +sp->wklSignal1, +sp->wklSignal2, +sp->wklFlag.flag, +sp->wklFlagReceiver, +sp->spuIdling, +sp->nSpus);
+							bool any_runnable = false; // lab: the re-kick watchdog
 							for (u32 w = 0; w < 16; w++)
 							{
 								if (const u32 st = static_cast<u32>(+sp->wklState1[w]))
 								{
+									if (st == 2) any_runnable = true; // lab: re-kick watchdog
 									fmt::append(spurst, " w%u{s%u rc %u+%u ct %u>%u>%u}", w, st,
 										+sp->wklReadyCount1[w], +sp->wklIdleSpuCountOrReadyCount2[w],
 										+sp->wklCurrentContention[w], +sp->wklPendingContention[w], +sp->wklMaxContention[w]);
+								}
+							}
+
+							// lab: the re-kick watchdog (the captain's timed delay at the station).
+							// Work runnable + picture frozen = the first kick was missed; re-ring the
+							// reservation bell until a parked kernel answers. Lost-wakeup cover.
+							{
+								static u64 last_flips = 0;
+								static int frozen_pulses = 0;
+								const u64 flips_now = render ? render->int_flip_index : 0;
+								if (any_runnable && flips_now == last_flips)
+									frozen_pulses++;
+								else
+									frozen_pulses = 0;
+								last_flips = flips_now;
+								if (any_runnable && frozen_pulses >= 2)
+								{
+									vm::reservation_notifier_notify(saddr, 0);
+									vm::reservation_notifier_notify(saddr + 0x80, 0);
+									trace("lab: re-kick nudge (runnable work + frozen flips x%d)", frozen_pulses);
 								}
 							}
 						}
