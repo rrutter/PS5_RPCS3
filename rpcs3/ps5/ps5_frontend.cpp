@@ -1176,7 +1176,8 @@ int run(const char* boot_path)
 					static bool kpark_dumped = false;
 					const u32 scount = idm::select<named_thread<spu_thread>>([&](u32, spu_thread& spu)
 					{
-						if (std::string_view(spu.get_name()).find("CellSpursKernel") == 0 && !kpark_dumped)
+						// (the full name is "SPU[0x...] Thread (CellSpursKernelN)" - find, not prefix)
+						if (std::string_view(spu.get_name()).find("CellSpursKernel") != std::string_view::npos && !kpark_dumped)
 						{
 							if (spu.pc >= last_kpc - 0x40 && spu.pc <= last_kpc + 0x40)
 							{
