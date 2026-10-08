@@ -11,6 +11,7 @@
 #include "Emu/RSX/Overlays/overlays.h"
 #include "Emu/RSX/Overlays/BigPicture/overlay_big_picture_game_info.h"
 #include "Emu/game_enumeration.h"
+#include "ps5_ui.h"
 
 #include <map>
 #include <memory>
@@ -160,6 +161,7 @@ namespace rsx::overlays
 		ellipse m_avatar;
 		label m_avatar_letter;
 		label m_user_name;
+		label m_build; // the title's build, beside the user
 
 		// Hero
 		label m_welcome;
@@ -210,17 +212,7 @@ namespace rsx::overlays
 		// Game settings: a page of the selected game's own settings, kept in its
 		// custom config (config/custom_configs/config_<serial>.yml), which the
 		// emulator lays over the global config when the game boots
-		struct game_setting
-		{
-			std::string section;
-			std::string key;
-			std::string label;
-			std::string help;
-			std::vector<std::string> options;
-			std::string global;
-			std::string value;
-			bool heading = false;
-		};
+		using game_setting = ps5ui::setting_row;
 
 		bool m_gs_open = false;
 		u64 m_gs_open_us = 0;
@@ -248,6 +240,7 @@ namespace rsx::overlays
 		bool m_detail = false;
 		bool m_flipped = false;    // the selected case shows its back
 		f32 m_flip_angle = 0.f;    // eases to pi when flipped
+		f32 m_spin = 0.f;          // the turn a spin has left, as a case opens into its menu
 		std::vector<u8> m_sheen_pixels;
 		std::unique_ptr<memory_image_info> m_sheen_image;
 		std::unique_ptr<image_info> m_flip_icon_data;

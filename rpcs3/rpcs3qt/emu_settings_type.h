@@ -108,6 +108,8 @@ enum class emu_settings_type
 	AllowHostGPULabels,
 	DisableMSLFastMath,
 	OutputScalingMode,
+	FrameGeneration, // PS5: frame generation (VKFrameGen.h)
+	DisableSamplingSkip, // PS5: offered in the launcher's Audio tab
 	ForceHwMSAAResolve,
 	DisableAsyncHostMM,
 	UseReBAR,

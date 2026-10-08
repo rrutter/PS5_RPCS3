@@ -89,6 +89,10 @@ const char* ps5_localized_string(localized_string_id id);
 // Emu/RSX/Overlays/overlay_utils.cpp
 std::u32string utf8_to_u32string(std::string_view utf8_string);
 
+u32 spu_accurate_xfloat_functions(); // SPULLVMRecompiler.cpp: collision functions compiled with accurate xfloat
+extern atomic_t<u64> g_ps5_getllar_waits[64][2]; // SPUThread.cpp: each SPU slot's GETLLAR polls answered by busy waiting, and by sleeping
+extern atomic_t<u64> g_ps5_frames_generated; // VKFrameGen.cpp: frames made between the game's
+
 // lab: the SPURS-kernel block trail + mega ring (defined in SPUThread.cpp)
 extern std::atomic<u32> g_spu_trail_idx[];
 extern u32 g_spu_trail_pc[][64];
@@ -99,6 +103,9 @@ namespace
 {
 	// The title's trace (rpcs3_ps5_title::trace), set once by rpcs3_ps5_run
 	void (*g_trace)(const char* line) = nullptr;
+
+	// The title's build (rpcs3_ps5_title::build), set once by rpcs3_ps5_run
+	std::string g_title_build;
 
 	// Set once the boot has started the game
 	atomic_t<bool> g_booted = false;
@@ -126,11 +133,21 @@ namespace
 		std::string name;
 		u32 running = 0;
 		u32 samples = 0;
+		u32 spu_index = umax;          // an SPU's index, for its GETLLAR counts
+		std::map<u32, u32> spu_pcs;    // where an SPU was when sampled running, by local storage address
 	};
 
-	std::map<u64, sampled_load> g_loads;  // by group (PPU 0, SPU 1) and id, for the trace; the status thread's alone
+	// The PS3's threads are read on the main thread, where a stop and the
+	// next boot reset the object manager (g_fxo->reset, in Kill and Init)
+	// without the lock idm::select takes: the status thread, listing them
+	// itself, read a destroyed thread as the launcher's shell stopped and GTA
+	// IV booted, and the app froze (build 88, on my console). The samples the
+	// main thread takes, the status thread sums under this lock
+	std::mutex g_loads_mutex;
+	std::map<u64, sampled_load> g_loads;  // by group (PPU 0, SPU 1) and id, for the trace
 	u32 g_group_running[2]{};             // the groups' running threads, summed over the samples
 	u32 g_group_samples = 0;
+	atomic_t<bool> g_sample_posted = false; // one sample waiting for the main thread at most
 	atomic_t<f32> g_group_load[2]{};      // each group's running threads as a share of the hardware threads, over the last five seconds
 
 	bool is_running(const cpu_thread& thread)
@@ -138,8 +155,10 @@ namespace
 		return !(thread.state & (cpu_flag::wait + cpu_flag::stop + cpu_flag::exit + cpu_flag::suspend + cpu_flag::dbg_global_pause + cpu_flag::dbg_pause));
 	}
 
+	// On the main thread
 	void sample_thread_loads()
 	{
+		std::lock_guard lock(g_loads_mutex);
 		const auto sample = [&](u32 group, u32 id, const cpu_thread& thread, auto&& name)
 		{
 			sampled_load& load = g_loads[u64{group} << 32 | id];
@@ -159,6 +178,12 @@ namespace
 		idm::select<named_thread<spu_thread>>([&](u32 id, named_thread<spu_thread>& spu)
 		{
 			sample(1, id, spu, [&] { return "SPU " + spu.get_name(); });
+			sampled_load& load = g_loads[u64{1} << 32 | id];
+			load.spu_index = spu.index;
+			if (is_running(spu) && load.spu_pcs.size() < 256)
+			{
+				load.spu_pcs[spu.pc]++;
+			}
 		});
 		g_group_samples++;
 	}
@@ -167,6 +192,7 @@ namespace
 	// the groups' loads for the overlay; the counts begin again
 	std::string take_thread_loads()
 	{
+		std::lock_guard lock(g_loads_mutex);
 		const f32 hardware = static_cast<f32>(std::max<u32>(1, utils::get_thread_count()));
 		for (u32 group = 0; group < 2; group++)
 		{
@@ -175,13 +201,48 @@ namespace
 		}
 		g_group_samples = 0;
 
+		// Each SPU slot's GETLLAR counts since the last call: an SPU polling for
+		// work, answered by busy waiting, counts as running, so a busy SPU says
+		// whether it worked or spun
+		static u64 s_waits[64][2]{};
+		static u64 s_last_us = 0;
+		const u64 now_us = get_system_time();
+		const f64 window = s_last_us ? (now_us - s_last_us) / 1e6 : 5.0;
+		s_last_us = now_us;
+		u64 waits[64][2]{};
+		for (u32 slot = 0; slot < 64; slot++)
+		{
+			for (u32 kind = 0; kind < 2; kind++)
+			{
+				const u64 count = g_ps5_getllar_waits[slot][kind].load();
+				waits[slot][kind] = count - s_waits[slot][kind];
+				s_waits[slot][kind] = count;
+			}
+		}
+
 		std::vector<std::pair<f64, std::string>> loads;
 		for (const auto& [key, load] : g_loads)
 		{
-			if (load.samples)
+			if (!load.samples)
 			{
-				loads.emplace_back(100.0 * load.running / load.samples, load.name);
+				continue;
 			}
+			const f64 share = 100.0 * load.running / load.samples;
+			std::string name = load.name;
+			if (load.spu_index != umax && share >= 50.0)
+			{
+				// Its three commonest places, and how its polls were answered
+				std::vector<std::pair<u32, u32>> pcs(load.spu_pcs.begin(), load.spu_pcs.end());
+				std::sort(pcs.begin(), pcs.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+				fmt::append(name, " (at");
+				for (usz i = 0; i < pcs.size() && i < 3; i++)
+				{
+					fmt::append(name, " 0x%x %.0f%%", pcs[i].first, 100.0 * pcs[i].second / load.samples);
+				}
+				const u64* counts = waits[load.spu_index % 64];
+				fmt::append(name, "; polls spun %.0f/s, slept %.0f/s)", counts[0] / window, counts[1] / window);
+			}
+			loads.emplace_back(share, std::move(name));
 		}
 		g_loads.clear();
 		std::sort(loads.begin(), loads.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
@@ -394,6 +455,18 @@ namespace
 			{
 				std::fprintf(stderr, "%.*s%s: %.*s\n", static_cast<int>(prefix.size()), prefix.data(),
 					msg->name, static_cast<int>(text.size()), text.data());
+			}
+
+			// The launcher's and the pause menu's own notices, always and outside
+			// the caps: they are few, and they say what was asked between games
+			// (a boot from the launcher after the first game said nothing). And
+			// the audio output's, a line a port every ten seconds counting the
+			// grains the emulator was late with: the sound's stutter, measured
+			const std::string_view channel(msg->name);
+			if (msg <= logs::level::notice && (channel == "Launcher" || channel == "PauseMenu" || channel == "PS5Audio"))
+			{
+				trace("%s%s: %s", prefix, msg->name, text.substr(0, std::min<usz>(text.find('\n'), 200)));
+				return;
 			}
 
 			// Notices only until the game runs: its own (a file opened, a thread
@@ -789,6 +862,7 @@ namespace
 int rpcs3_ps5_run(const char* boot_path, const rpcs3_ps5_title& title)
 {
 	g_trace = title.trace;
+	g_title_build = title.build ? title.build : "";
 	ps5_pad_handler::set_source(title.poll_pads);
 
 	// RPCS3 is built without exceptions: its fatal errors (fmt::throw_exception)
@@ -796,11 +870,17 @@ int rpcs3_ps5_run(const char* boot_path, const rpcs3_ps5_title& title)
 	return run(boot_path);
 }
 
+// The title's build, which the launcher shows (empty when the title has none)
+const std::string& ps5_title_build()
+{
+	return g_title_build;
+}
+
 namespace
 {
 int run(const char* boot_path)
 {
-	trace("frontend: start");
+	trace("frontend: start, build %s", g_title_build.empty() ? "unknown" : g_title_build);
 	record_signals();
 	ps5_set_terminate_handler();
 
@@ -844,7 +924,7 @@ int run(const char* boot_path)
 	std::unique_ptr<logs::listener> log_file = logs::make_file_listener(fs::get_cache_dir() + "RPCS3.log", 256ull * 1024 * 1024);
 	{
 		logs::stored_message ver{sys_log.always()};
-		ver.text = fmt::format("RPCS3 for the PS5, on %s", utils::get_system_info());
+		ver.text = fmt::format("RPCS3 for the PS5, build %s, on %s", g_title_build.empty() ? "unknown" : g_title_build, utils::get_system_info());
 		logs::set_init({std::move(ver)});
 	}
 
@@ -869,6 +949,9 @@ int run(const char* boot_path)
 	trace("frontend: Emu.Init");
 	Emu.Init();
 	trace("frontend: Emu.Init done; guest memory at %p, its mirror at %p, executable range at %p", vm::g_base_addr, vm::g_sudo_addr, vm::g_exec_addr);
+	// An SPU polling for work waits in user mode with MWAITX (AMD) or TPAUSE
+	// (Intel) when the CPU allows it, else in a loop of pauses
+	trace("frontend: SPU busy waits use %s", utils::has_um_wait() ? (utils::has_waitpkg() ? "TPAUSE" : "MWAITX") : "a loop of pauses (no user-mode wait)");
 
 
 	// Sony's PS3UPDAT.PUP in the title's folder installs the PS3 system software,
@@ -1125,14 +1208,22 @@ int run(const char* boot_path)
 					for (u32 tick = 0; tick < 20 && thread_ctrl::state() != thread_state::aborting; tick++)
 					{
 						thread_ctrl::wait_for(50'000);
-						if (sampling && Emu.IsRunning())
+						if (sampling && Emu.IsRunning() && !g_sample_posted.exchange(true))
 						{
-							sample_thread_loads();
+							g_main.post([]()
+							{
+								if (Emu.IsRunning())
+								{
+									sample_thread_loads();
+								}
+								g_sample_posted = false;
+							}, nullptr);
 						}
 					}
 					running_for = Emu.IsRunning() && !Emu.GetTitleID().empty() ? running_for + 1 : 0;
 					if (!running_for)
 					{
+						std::lock_guard lock(g_loads_mutex);
 						g_loads.clear();
 					}
 					if (seconds % 5 != 4 || Emu.IsStopped())
@@ -1152,10 +1243,11 @@ int run(const char* boot_path)
 							trace("mega-slice:%s", slice);
 					}
 
+
 					// The busiest of the PS3's threads over these five seconds
 					if (const std::string busiest = take_thread_loads(); !busiest.empty())
 					{
-						trace("busiest threads (share of the time each was running):%s", busiest);
+						trace("busiest threads (share of the time each was running):%s; collision functions compiled accurate: %u", busiest, spu_accurate_xfloat_functions());
 					}
 
 					std::string ppus;
@@ -1350,9 +1442,9 @@ int run(const char* boot_path)
 						else if (S_ISSOCK(info.st_mode)) sockets++;
 						else others++;
 					}
-					// lab: their open-files watch + our SPU threads and SPURS sections
-					trace("status %ds: state %d, RSX flips %d; heap %d MiB (peak %d), free direct %d MiB, flexible %d MiB; progress '%s' modules %u/%u files %u/%u; open: %u files, %u folders, %u sockets, %u other (%u by fs); %d PPU threads:%s; %d SPU threads:%s%s", seconds + 1,
-						static_cast<u32>(Emu.GetStatus()), render ? render->int_flip_index : 0, heap.mapped_bytes >> 20, heap.peak_bytes >> 20, direct >> 20,
+					// lab: their open-files watch + our SPU threads and SPURS sections + their frame-gen count
+					trace("status %ds: state %d, RSX flips %d (%u made between); heap %d MiB (peak %d), free direct %d MiB, flexible %d MiB; progress '%s' modules %u/%u files %u/%u; open: %u files, %u folders, %u sockets, %u other (%u by fs); %d PPU threads:%s; %d SPU threads:%s%s", seconds + 1,
+						static_cast<u32>(Emu.GetStatus()), render ? render->int_flip_index : 0, static_cast<u32>(g_ps5_frames_generated.load()), heap.mapped_bytes >> 20, heap.peak_bytes >> 20, direct >> 20,
 						flexible >> 20, progress_text, +g_progr_pdone, +g_progr_ptotal, +g_progr_fdone, +g_progr_ftotal, regular, folders, sockets, others, static_cast<u32>(fs::ps5_open_tracked()), count, ppus, scount, spus, spurst);
 					// Near the limit, which ones (once per 40 more)
 					static u32 s_reported = 0;

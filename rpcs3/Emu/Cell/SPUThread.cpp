@@ -47,6 +47,14 @@
 #endif
 #endif
 
+#ifdef __PROSPERO__
+// PS5: how each SPU's GETLLAR polling was answered, by the SPU's index (its
+// slot, index % 64): by busy waiting, which the trace's load sampler counts
+// as running, or by sleeping until the reservation changes. The trace's
+// busiest-threads line reports them (ps5_frontend.cpp)
+atomic_t<u64> g_ps5_getllar_waits[64][2]{};
+#endif
+
 // LUTs for SPU instructions
 
 const u32 spu_frest_fraction_lut[32] =
@@ -1545,6 +1553,21 @@ void spu_thread::cpu_task()
 	std::fesetround(FE_TOWARDZERO);
 
 	gv_set_zeroing_denormals();
+
+#ifdef __PROSPERO__
+	// PS5: the kernel of a SPURS instance of one SPU runs a step above the
+	// rest, as the audio output thread does. GTA IV's (its secondary
+	// instance, by its local storage the Miles Sound System's MP3 decoding and
+	// mixing) ran 80-100% of the time in busy streets on my console (build
+	// 93's trace), and the sound broke up there
+	if (group && group->max_num == 1)
+	{
+		if (const auto name = spu_tname.load(); name && name->find("CellSpursKernel") != umax)
+		{
+			thread_ctrl::set_native_priority(1);
+		}
+	}
+#endif
 
 	g_tls_log_prefix = []
 	{
@@ -4541,6 +4564,9 @@ bool spu_thread::process_mfc_cmd()
 
 							if (getllar_busy_waiting_switch == 1)
 							{
+#ifdef __PROSPERO__
+								g_ps5_getllar_waits[index % 64][0].raw()++;
+#endif
 								getllar_wait_time[(addr % SPU_LS_SIZE) / 128].front() = 0;
 
 #if defined(ARCH_X64)
@@ -4585,6 +4611,9 @@ bool spu_thread::process_mfc_cmd()
 						}
 
 						// Spinning, might as well yield cpu resources
+#ifdef __PROSPERO__
+						g_ps5_getllar_waits[index % 64][1].raw()++;
+#endif
 						state += cpu_flag::wait;
 
 						usz cache_line_waiter_index = umax;
