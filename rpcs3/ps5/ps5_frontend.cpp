@@ -1333,6 +1333,14 @@ int run(const char* boot_path)
 									std::string door;
 									for (u32 w = 0xcc0; w < 0xd30; w += 4)
 										fmt::append(door, " %x:%08x", w, spu._ref<u32>(w));
+									// lab: lift the whole code region for PC-side disassembly -
+									// the scheduler read at full fidelity beats another week of tapes
+									if (FILE* f = std::fopen("/app0/spu-ls-dump.bin", "wb"))
+									{
+										std::fwrite(spu._ptr<u8>(0), 1, 0x4000, f);
+										std::fclose(f);
+										trace("lab: the kernel's LS (0x4000 bytes) written to /app0/spu-ls-dump.bin");
+									}
 									// lab: the parked kernel's own block trail (last 32 entries)
 									std::string trail;
 									const u32 ix = spu.index & 7;
