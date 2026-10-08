@@ -89,6 +89,10 @@ const char* ps5_localized_string(localized_string_id id);
 // Emu/RSX/Overlays/overlay_utils.cpp
 std::u32string utf8_to_u32string(std::string_view utf8_string);
 
+// lab: the SPURS-kernel block trail (defined at file scope in SPUThread.cpp)
+extern std::atomic<u32> g_spu_trail_idx;
+extern u32 g_spu_trail_pc[];
+
 namespace
 {
 	// The title's trace (rpcs3_ps5_title::trace), set once by rpcs3_ps5_run
@@ -1187,8 +1191,13 @@ int run(const char* boot_path)
 									std::string words;
 									for (u32 w = 0; w < 8; w++)
 										fmt::append(words, " %08x", spu._ref<u32>(spu.pc + w * 4));
-									trace("lab kpark-dump: %s pc 0x%x state %x srr0 %x intr %d | ls:%s", spu.get_name(), spu.pc,
-										+spu.state, spu.srr0, spu.interrupts_enabled ? 1 : 0, words);
+									// lab: the block trail - the last 32 blocks kernel0 entered
+									std::string trail;
+									const u32 end = +g_spu_trail_idx;
+									for (u32 t = end > 32 ? end - 32 : 0; t < end; t++)
+										fmt::append(trail, " %x", g_spu_trail_pc[t % 128]);
+									trace("lab kpark-dump: %s pc 0x%x state %x srr0 %x intr %d | ls:%s | trail:%s", spu.get_name(), spu.pc,
+										+spu.state, spu.srr0, spu.interrupts_enabled ? 1 : 0, words, trail);
 								}
 							}
 							else

@@ -1470,6 +1470,11 @@ void spu_thread::cpu_return()
 
 extern thread_local std::string(*g_tls_log_prefix)();
 
+// lab: the SPURS-kernel block trail (index into a ring; both the JIT and the
+// interpreter loops feed it - the interpreter's g_interpreter dispatches blocks too)
+std::atomic<u32> g_spu_trail_idx{0};
+u32 g_spu_trail_pc[128]{};
+
 void spu_thread::cpu_task()
 {
 #ifdef __APPLE__
@@ -1557,6 +1562,14 @@ void spu_thread::cpu_task()
 					break;
 			}
 
+			// lab: block-entry trail for SPURS kernel0 (the JIT-wedge hunt): each
+			// dispatch's pc into a ring; the frontend dumps it when the kernel parks
+			if (spurs_addr != invalid_spurs && index == 0)
+			{
+				g_spu_trail_pc[+g_spu_trail_idx % 128] = pc;
+				g_spu_trail_idx++;
+			}
+
 			if (_ref<u32>(pc) == 0x0u)
 			{
 				if (spu_thread::stop_and_signal(0x0))
@@ -1587,6 +1600,13 @@ void spu_thread::cpu_task()
 			{
 				if (check_state())
 					break;
+			}
+
+			// lab: the trail too (interpreter = the gold reference)
+			if (spurs_addr != invalid_spurs && index == 0)
+			{
+				g_spu_trail_pc[+g_spu_trail_idx % 128] = pc;
+				g_spu_trail_idx++;
 			}
 
 			spu_runtime::g_interpreter(*this, _ptr<u8>(0), nullptr);
