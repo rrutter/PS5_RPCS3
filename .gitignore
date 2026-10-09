@@ -129,3 +129,6 @@ CMakeUserPresets.json
 
 # claude
 CLAUDE.md
+
+# lab: keep our notes local - never sync .md files
+*.md
