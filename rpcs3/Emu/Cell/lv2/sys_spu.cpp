@@ -22,6 +22,10 @@
 
 #include "util/asm.hpp"
 
+#ifdef __PROSPERO__
+#include "Utilities/File.h"
+#endif
+
 LOG_CHANNEL(sys_spu);
 
 template <>
@@ -493,6 +497,19 @@ error_code sys_spu_initialize(ppu_thread& ppu, u32 max_usable_spu, u32 max_raw_s
 
 	// NOTE: This value can be changed by VSH in theory
 	max_usable_spu = 6;
+
+#ifdef __PROSPERO__
+	// lab: /app0/rpcs3-spu-cap.txt caps usable SPUs at 4 - fewer spinning kernel
+	// threads than the console's ~7 usable cores. Tests the oversubscription /
+	// scheduler-gridlock theory of the SPURS1 JIT wedge. SPURS is designed to
+	// degrade gracefully to however many SPUs the system grants.
+	static const bool spu_cap = fs::is_file("/app0/rpcs3-spu-cap.txt");
+	if (spu_cap)
+	{
+		max_usable_spu = 4;
+		sys_spu.notice("lab: SPU cap lever engaged (max_usable_spu=4)");
+	}
+#endif
 
 	std::lock_guard lock(limits.mutex);
 
