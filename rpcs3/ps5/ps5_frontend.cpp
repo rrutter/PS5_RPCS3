@@ -1373,6 +1373,23 @@ int run(const char* boot_path)
 									trace("lab gap-door:%s", door);
 									trace("lab kernel-ctx:%s", ctx);
 								}
+								// lab: pulse-rate three-view - the one-shot above fires EARLY in the
+								// park, but staleness must be convicted LATE (the kick lands mid-wedge).
+								// Every pulse while the park persists: kernel LS copy vs its reservation
+								// buffer vs the live line. Divergence post-kick = the kernel decides on a lie.
+								else if (kpark_dumped && same_kpc_count > 4)
+								{
+									std::string lsv, rdv, liv;
+									const u32* rdw = reinterpret_cast<const u32*>(spu.rdata);
+									const bool lok = vm::check_addr(0x5631a380, vm::page_readable, 32);
+									for (int w = 0; w < 8; w++)
+									{
+										fmt::append(lsv, " %08x", spu._ref<u32>(0x2d80 + w * 4));
+										fmt::append(rdv, " %08x", rdw[w]);
+										if (lok) fmt::append(liv, " %08x", vm::read32(0x5631a380 + w * 4));
+									}
+									trace("lab kpark-pulse: LS[2d80]:%s | rdata:%s | live[+80]:%s", lsv, rdv, liv);
+								}
 							}
 							else
 							{
