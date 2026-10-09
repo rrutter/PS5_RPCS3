@@ -2887,10 +2887,16 @@ s32 cellSpursReadyCountStore(ppu_thread& /*ppu*/, vm::ptr<CellSpurs> spurs, u32 
 	// lab: does the store LAND? (the wedge: workloads runnable but readyCount
 	// stays 0 - either this never gets called, it early-returns, or the write
 	// evaporates in the console's vm). readback immediately, behind the dump flag.
-	if (fs::is_file("/app0/spurs-dump.txt"))
+	// NOTE: cached - this is the per-kick pump path; a syscall per call warps
+	// the very cadence under study (swarm audit, Heisenbug finding F9).
+	static const bool dump_rcs = fs::is_file("/app0/spurs-dump.txt");
+	if (dump_rcs)
 	{
 		const u32 rb = +spurs->readyCount(wid);
-		cellSpurs.notice("lab rcs: wid %u value %u -> readback %u (state %u)", wid, value, rb, +spurs->wklState(wid));
+		// instance pointer included: the wedge could be a two-structs mixup -
+		// the HLE kick landing on a different CellSpurs than the kernels poll
+		// (they poll the instance from group init, seen at 0x5631a300).
+		cellSpurs.notice("lab rcs: spurs=*0x%x wid %u value %u -> readback %u (state %u)", spurs, wid, value, rb, +spurs->wklState(wid));
 	}
 
 	return CELL_OK;
