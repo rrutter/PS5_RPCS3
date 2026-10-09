@@ -91,6 +91,7 @@ std::u32string utf8_to_u32string(std::string_view utf8_string);
 
 u32 spu_accurate_xfloat_functions(); // SPULLVMRecompiler.cpp: collision functions compiled with accurate xfloat
 extern atomic_t<u64> g_ps5_getllar_waits[64][2]; // SPUThread.cpp: each SPU slot's GETLLAR polls answered by busy waiting, and by sleeping
+extern atomic_t<u64> g_ps5_mfc_claims[64][2]; // SPUThread.cpp: GETLLAR vs PUTLLC issue counts (lab claim-probe)
 extern atomic_t<u64> g_ps5_frames_generated; // VKFrameGen.cpp: frames made between the game's
 
 // lab: the SPURS-kernel block trail + mega ring (defined in SPUThread.cpp)
@@ -207,11 +208,13 @@ namespace
 		// work, answered by busy waiting, counts as running, so a busy SPU says
 		// whether it worked or spun
 		static u64 s_waits[64][2]{};
+		static u64 s_claims[64][2]{};
 		static u64 s_last_us = 0;
 		const u64 now_us = get_system_time();
 		const f64 window = s_last_us ? (now_us - s_last_us) / 1e6 : 5.0;
 		s_last_us = now_us;
 		u64 waits[64][2]{};
+		u64 claims[64][2]{};
 		for (u32 slot = 0; slot < 64; slot++)
 		{
 			for (u32 kind = 0; kind < 2; kind++)
@@ -219,6 +222,9 @@ namespace
 				const u64 count = g_ps5_getllar_waits[slot][kind].load();
 				waits[slot][kind] = count - s_waits[slot][kind];
 				s_waits[slot][kind] = count;
+				const u64 clm = g_ps5_mfc_claims[slot][kind].load();
+				claims[slot][kind] = clm - s_claims[slot][kind];
+				s_claims[slot][kind] = clm;
 			}
 		}
 
@@ -242,7 +248,8 @@ namespace
 					fmt::append(name, " 0x%x %.0f%%", pcs[i].first, 100.0 * pcs[i].second / load.samples);
 				}
 				const u64* counts = waits[load.spu_index % 64];
-				fmt::append(name, "; polls spun %.0f/s, slept %.0f/s)", counts[0] / window, counts[1] / window);
+				const u64* clm = claims[load.spu_index % 64];
+				fmt::append(name, "; polls spun %.0f/s, slept %.0f/s | gl %.0f/s pu %.0f/s)", counts[0] / window, counts[1] / window, clm[0] / window, clm[1] / window);
 			}
 			loads.emplace_back(share, std::move(name));
 		}
@@ -1373,23 +1380,6 @@ int run(const char* boot_path)
 									trace("lab gap-door:%s", door);
 									trace("lab kernel-ctx:%s", ctx);
 								}
-								// lab: pulse-rate three-view - the one-shot above fires EARLY in the
-								// park, but staleness must be convicted LATE (the kick lands mid-wedge).
-								// Every pulse while the park persists: kernel LS copy vs its reservation
-								// buffer vs the live line. Divergence post-kick = the kernel decides on a lie.
-								else if (kpark_dumped && same_kpc_count > 4)
-								{
-									std::string lsv, rdv, liv;
-									const u32* rdw = reinterpret_cast<const u32*>(spu.rdata);
-									const bool lok = vm::check_addr(0x5631a380, vm::page_readable, 32);
-									for (int w = 0; w < 8; w++)
-									{
-										fmt::append(lsv, " %08x", spu._ref<u32>(0x2d80 + w * 4));
-										fmt::append(rdv, " %08x", rdw[w]);
-										if (lok) fmt::append(liv, " %08x", vm::read32(0x5631a380 + w * 4));
-									}
-									trace("lab kpark-pulse: LS[2d80]:%s | rdata:%s | live[+80]:%s", lsv, rdv, liv);
-								}
 							}
 							else
 							{
@@ -1397,6 +1387,26 @@ int run(const char* boot_path)
 								same_kpc_count = 0;
 								kpark_dumped = false;
 							}
+						}
+						// lab: pulse-rate three-view - independent of the fragile one-shot park
+						// detector (the poll loop is wider than its window; the kpark block is
+						// gated on !kpark_dumped so nothing chained inside it can run post-dump).
+						// Any kernel found inside the poll loop, every pulse: LS copy vs its
+						// reservation buffer vs the live line. Divergence post-kick = the kernel
+						// decides on a lie; agreement = the claim protocol itself is broken.
+						if (kpark_dumped && std::string_view(spu.get_name()).find("CellSpursKernel") != std::string_view::npos
+							&& spu.pc >= 0x1200 && spu.pc < 0x1400)
+						{
+							std::string lsv, rdv, liv;
+							const u32* rdw = reinterpret_cast<const u32*>(spu.rdata);
+							const bool lok = vm::check_addr(0x5631a380, vm::page_readable, 32);
+							for (int w = 0; w < 8; w++)
+							{
+								fmt::append(lsv, " %08x", spu._ref<u32>(0x2d80 + w * 4));
+								fmt::append(rdv, " %08x", rdw[w]);
+								if (lok) fmt::append(liv, " %08x", vm::read32(0x5631a380 + w * 4));
+							}
+							trace("lab kpark-pulse: %s LS[2d80]:%s | rdata:%s | live[+80]:%s", spu.get_name(), lsv, rdv, liv);
 						}
 						if (spus.size() < 640)
 						{

@@ -53,6 +53,11 @@
 // as running, or by sleeping until the reservation changes. The trace's
 // busiest-threads line reports them (ps5_frontend.cpp)
 atomic_t<u64> g_ps5_getllar_waits[64][2]{};
+// lab: GETLLAR vs PUTLLC issue counts per SPU slot ([0]=getllar, [1]=putllc).
+// The wedge question: does the kernel's claim ever even ATTEMPT? gl climbing
+// with pu flat at 0 = the pre-claim check always says not-ready (read side);
+// pu firing but never completing = the claim contention side.
+atomic_t<u64> g_ps5_mfc_claims[64][2]{};
 #endif
 
 // LUTs for SPU instructions
@@ -4427,6 +4432,7 @@ bool spu_thread::process_mfc_cmd()
 
 		const u32 addr = ch_mfc_cmd.eal & -128;
 		spu_mega_log(*this, "getllar", addr, 0, 0); // lab
+		g_ps5_mfc_claims[index % 64][0].raw()++; // lab: claim-probe
 		const auto& data = vm::_ref<spu_rdata_t>(addr);
 
 		if (addr == last_faddr)
@@ -4808,6 +4814,7 @@ bool spu_thread::process_mfc_cmd()
 	{
 		// Avoid logging useless commands if there is no reservation
 		const bool dump = g_cfg.core.mfc_debug && raddr;
+		g_ps5_mfc_claims[index % 64][1].raw()++; // lab: claim-probe
 
 		const bool is_spurs_task_wait = pc == 0x11e4 && spurs_addr != 0u - 0x80u;
 
