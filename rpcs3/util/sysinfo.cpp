@@ -344,6 +344,20 @@ bool utils::has_appropriate_um_wait()
 // Similar to the above function but allow execution if alternatives such as yield are not wanted
 bool utils::has_um_wait()
 {
+#ifdef __PROSPERO__
+	// lab: /app0/rpcs3-no-mwaitx.txt forces the pause-loop fallback everywhere.
+	// The TSC fix armed MWAITX on console for the FIRST time (this gate was
+	// false while get_tsc_freq()==0). If the hypervisor swallows MONITORX
+	// wakes, the unbounded spin_wait on the VK present path (VKGSRenderTypes
+	// consumer/producer_wait) sleeps forever: no completion -> the guest
+	// semaphore freezes -> the game's own gpuhang.bin watchdog traps. This
+	// flag A/B-tests the whole MWAITX class in one flight.
+	static const bool no_mwaitx = fs::is_file("/app0/rpcs3-no-mwaitx.txt");
+	if (no_mwaitx)
+	{
+		return false;
+	}
+#endif
 	static const bool g_value = (has_waitx() || has_waitpkg()) && get_tsc_freq();
 	return g_value;
 }
