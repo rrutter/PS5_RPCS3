@@ -29,6 +29,10 @@
 #include "stack_trace.h"
 #include "util/dyn_lib.hpp"
 
+#ifdef __PROSPERO__
+#include "Utilities/File.h"
+#endif
+
 DYNAMIC_IMPORT_RENAME("Kernel32.dll", SetThreadDescriptionImport, "SetThreadDescription", HRESULT(HANDLE hThread, PCWSTR lpThreadDescription));
 
 #else
@@ -3002,6 +3006,50 @@ void thread_base::start()
 	pthread_attr_setschedpolicy(&attrs, SCHED_RR);
 	pthread_attr_setschedparam(&attrs, &sp);
 	ensure(pthread_create(&thread_id, &attrs, entry_point, this) == 0);
+#elif defined(__PROSPERO__)
+	pthread_t thread_id{};
+
+	// lab: /app0/rpcs3-sched-rr.txt runs emulator threads under SCHED_RR (timesliced)
+	// instead of the inherited SCHED_FIFO. RPCS3's spin-then-block protocols assume
+	// the host OS preempts spinners; FIFO on ~7 cores lets a spinning guest thread
+	// hold its core forever (the fork's own SPURS-kernel priority carve-out proves
+	// the starvation class). One variable: same inherited priority, different policy.
+	static const bool sched_rr = fs::is_file("/app0/rpcs3-sched-rr.txt");
+
+	if (sched_rr)
+	{
+		pthread_attr_t attrs;
+		struct sched_param sp;
+		std::memset(&sp, 0, sizeof(sp));
+		int cur_policy = SCHED_FIFO;
+		pthread_getschedparam(pthread_self(), &cur_policy, &sp); // inherit the title's priority (700)
+		pthread_attr_init(&attrs);
+		pthread_attr_setinheritsched(&attrs, PTHREAD_EXPLICIT_SCHED);
+		pthread_attr_setschedpolicy(&attrs, SCHED_RR);
+		pthread_attr_setschedparam(&attrs, &sp);
+		const int err = pthread_create(&thread_id, &attrs, entry_point, this);
+		pthread_attr_destroy(&attrs);
+
+		static bool announced = false;
+		if (!announced)
+		{
+			announced = true;
+			sig_log.notice("lab: SCHED_RR lever %s", err == 0 ? "ENGAGED" : fmt::format("FAILED (err %d), FIFO kept", err));
+		}
+
+		if (err == 0)
+		{
+			// Thread created under SCHED_RR
+		}
+		else
+		{
+			ensure(pthread_create(&thread_id, nullptr, entry_point, this) == 0);
+		}
+	}
+	else
+	{
+		ensure(pthread_create(&thread_id, nullptr, entry_point, this) == 0);
+	}
 #else
 	pthread_t thread_id{};
 	ensure(pthread_create(&thread_id, nullptr, entry_point, this) == 0);
