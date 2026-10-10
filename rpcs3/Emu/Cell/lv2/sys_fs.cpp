@@ -1536,6 +1536,11 @@ error_code sys_fs_read(ppu_thread& ppu, u32 fd, vm::ptr<void> buf, u64 nbytes, v
 {
 	lv2_obj::sleep(ppu);
 
+	// lab: the read side of the FMV stall - if a giant .bik chunk read occupies
+	// the fs bridge for seconds, the metadata probes' 2.7s waits are queueing,
+	// not work. size included: the chunking strategy is the smoking gun.
+	FS_SLOWLOG("read", std::string("fd ") + std::to_string(fd) + " size " + std::to_string(nbytes >> 20) + "MB");
+
 	sys_fs.trace("sys_fs_read(fd=%d, buf=*0x%x, nbytes=0x%llx, nread=*0x%x)", fd, buf, nbytes, nread);
 
 	if (!nread)
