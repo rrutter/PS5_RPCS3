@@ -1301,6 +1301,13 @@ lv2_file::open_raw_result_t lv2_file::open_raw(const std::string& local_path, s3
 	if (file && open_mode == fs::read)
 	{
 		static const bool ramfmv = fs::is_file("/app0/rpcs3-ramfmv.txt");
+		// lab: one-shot self-report - the lever stayed silent on-console; say why
+		static bool ramfmv_announced = false;
+		if (!ramfmv_announced)
+		{
+			ramfmv_announced = true;
+			sys_fs.notice("lab ramfmv: hook live, flag %s, first read-only open %s (%.0f MB)", ramfmv ? "ON" : "OFF", local_path, file.size() / 1e6);
+		}
 		if (ramfmv)
 		{
 			static const u64 s_cap = []
