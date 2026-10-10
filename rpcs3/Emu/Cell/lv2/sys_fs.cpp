@@ -21,6 +21,10 @@
 #ifdef __PROSPERO__
 #include "Utilities/File.h"
 #include <chrono>
+#include <map>
+#include <vector>
+#include <memory>
+#include <cstdlib>
 #endif
 
 LOG_CHANNEL(sys_fs);
@@ -1286,6 +1290,60 @@ lv2_file::open_raw_result_t lv2_file::open_raw(const std::string& local_path, s3
 	std::lock_guard lock(mp->mutex);
 
 	fs::file file(local_path, open_mode);
+
+#ifdef __PROSPERO__
+	// lab: /app0/rpcs3-ramfmv.txt - serve read-only files from a host-RAM cache
+	// (flag content: per-file cap in MB, default 300; total budget 1500MB).
+	// The FMV hunt's endgame: the instruments say the bytes arrive on time, but
+	// this makes storage a constant so the present-pacing hunt can never again
+	// be confused by it - and if the blips DO die here, the bridge was guilty
+	// after all. First open of a file pays the slurp once; later opens are RAM.
+	if (file && open_mode == fs::read)
+	{
+		static const bool ramfmv = fs::is_file("/app0/rpcs3-ramfmv.txt");
+		if (ramfmv)
+		{
+			static const u64 s_cap = []
+			{
+				u64 mb = 300;
+				if (fs::file f = fs::file("/app0/rpcs3-ramfmv.txt"))
+					if (const auto t = f.to_string(); !t.empty())
+						if (const u64 v = std::strtoull(t.c_str(), nullptr, 10)) mb = v;
+				return mb << 20;
+			}();
+			static std::mutex s_ram_mtx;
+			static std::map<std::string, std::shared_ptr<std::vector<u8>>> s_ram_cache;
+			static u64 s_ram_used = 0;
+
+			const u64 fsize = file.size();
+			if (fsize > 0 && fsize <= s_cap)
+			{
+				std::shared_ptr<std::vector<u8>> buf;
+				{
+					std::lock_guard<std::mutex> g(s_ram_mtx);
+					if (const auto it = s_ram_cache.find(local_path); it != s_ram_cache.end())
+						buf = it->second;
+				}
+				if (!buf && s_ram_used + fsize <= (1500ull << 20))
+				{
+					auto fresh = std::make_shared<std::vector<u8>>(fsize);
+					file.seek(0);
+					if (file.read(fresh->data(), fsize) == fsize)
+					{
+						std::lock_guard<std::mutex> g(s_ram_mtx);
+						buf = s_ram_cache.emplace(local_path, std::move(fresh)).first->second;
+						s_ram_used += fsize;
+						sys_fs.notice("lab ramfmv: cached %s (%.0f MB, total %.0f MB)", local_path, fsize / 1e6, s_ram_used / 1e6);
+					}
+				}
+				if (buf)
+				{
+					file = fs::file(buf->data(), buf->size());
+				}
+			}
+		}
+	}
+#endif
 
 	if (!file && open_mode == fs::read && fs::g_tls_error == fs::error::noent && mp.mp != &g_mp_sys_dev_hdd1)
 	{
