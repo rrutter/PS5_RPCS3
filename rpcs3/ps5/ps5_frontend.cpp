@@ -1469,6 +1469,15 @@ int run(const char* boot_path)
 									trace("lab task-stuck: %s pc 0x%x | pending MFC cmd 0x%x tag %u size %u lsa 0x%x eal 0x%x eah 0x%x | tag_mask %x fence %x barrier %x tagstat %u",
 										spu.get_name(), spu.pc, +c.cmd, c.tag, c.size, c.lsa, c.eal, c.eah,
 										+spu.ch_tag_mask, spu.mfc_fence, spu.mfc_barrier, spu.ch_tag_stat.get_count());
+									// the pending cmd is the LAST one; the op it waits on was overwritten
+									// by it - the queue holds what never completed
+									std::string q;
+									for (u32 qi = 0; qi < spu.mfc_size && qi < 16; qi++)
+									{
+										const auto& e = spu.mfc_queue[qi];
+										fmt::append(q, " [%u]cmd %x tag %u size %u eal %x", qi, +e.cmd, e.tag, e.size, e.eal);
+									}
+									trace("lab task-stuck-queue: %s mfc_size %u |%s", spu.get_name(), spu.mfc_size, q);
 								}
 							}
 							else
