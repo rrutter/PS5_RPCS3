@@ -962,6 +962,24 @@ int run(const char* boot_path)
 	// (Intel) when the CPU allows it, else in a loop of pauses
 	trace("frontend: SPU busy waits use %s", utils::has_um_wait() ? (utils::has_waitpkg() ? "TPAUSE" : "MWAITX") : "a loop of pauses (no user-mode wait)");
 
+	// lab: the boot roll-call - every run self-evidences its core build and the
+	// flags it actually sees. Tonight's hunt got poisoned twice by a stale core
+	// and by silently-missing flags; no flight should ever have to guess again.
+	{
+		u64 core_hash = 1469598103934665603ull; // FNV-1a
+		if (fs::file cf = fs::file("/app0/rpcs3-code.bin"))
+		{
+			std::vector<u8> buf(cf.size());
+			if (cf.read(buf.data(), buf.size()) == buf.size())
+				for (const u8 b : buf) { core_hash ^= b; core_hash *= 1099511628211ull; }
+		}
+		std::string flags;
+		for (const char* f : {"rpcs3-interpreter.txt", "rpcs3-asmjit.txt", "rpcs3-sched-rr.txt", "rpcs3-no-mwaitx.txt", "rpcs3-llvm-threads.txt", "fs-slowlog.txt", "rpcs3-ramfmv.txt", "spurs-dump.txt", "rpcs3-megatrace.txt"})
+			if (fs::is_file(std::string("/app0/") + f))
+				fmt::append(flags, " %s", f);
+		trace("lab roll-call: core %012llx | flags:%s", core_hash, flags.empty() ? " (none)" : flags);
+	}
+
 
 	// Sony's PS3UPDAT.PUP in the title's folder installs the PS3 system software,
 	// as the desktop's File > Install Firmware does (ps5_firmware.cpp)
