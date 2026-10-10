@@ -1,5 +1,11 @@
 #include "barriers.h"
 #include "buffer_object.h"
+
+#ifdef __PROSPERO__
+// lab: the monster trap, finer - the fence wait's own marker
+extern atomic_t<u32> g_ps5_rsx_op;
+namespace { struct ps5_rsx_op_guard { u32 prev; ps5_rsx_op_guard(u32 op) : prev(g_ps5_rsx_op.exchange(op)) {} ~ps5_rsx_op_guard() { g_ps5_rsx_op.store(prev); } }; }
+#endif
 #include "commands.h"
 #include "device.h"
 #include "garbage_collector.h"
@@ -562,6 +568,9 @@ namespace vk
 
 	VkResult wait_for_fence(fence* pFence, u64 timeout)
 	{
+#ifdef __PROSPERO__
+		ps5_rsx_op_guard ps5_op(5); // 5 = fence wait
+#endif
 		pFence->wait_flush();
 
 		if (timeout)

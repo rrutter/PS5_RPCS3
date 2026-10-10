@@ -1,5 +1,11 @@
 #include "stdafx.h"
 #include "Emu/RSX/VK/VKGSRenderTypes.hpp"
+
+#ifdef __PROSPERO__
+// lab: the monster trap, finer - the texture upload's own marker
+extern atomic_t<u32> g_ps5_rsx_op;
+namespace { struct ps5_rsx_op_guard { u32 prev; ps5_rsx_op_guard(u32 op) : prev(g_ps5_rsx_op.exchange(op)) {} ~ps5_rsx_op_guard() { g_ps5_rsx_op.store(prev); } }; }
+#endif
 #include "VKTextureCache.h"
 #include "VKCompute.h"
 #include "VKAsyncScheduler.h"
@@ -413,6 +419,9 @@ namespace vk
 
 	void texture_cache::copy_transfer_regions_impl(vk::command_buffer& cmd, vk::image* dst, const rsx::simple_array<copy_region_descriptor>& sections_to_transfer) const
 	{
+#ifdef __PROSPERO__
+		ps5_rsx_op_guard ps5_op(4); // 4 = texture upload
+#endif
 		const auto dst_aspect = dst->aspect();
 		const auto dst_bpp = vk::get_format_texel_width(dst->format());
 
