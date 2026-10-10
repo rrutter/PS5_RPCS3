@@ -48,7 +48,7 @@ namespace fs_slowlog_detail
 			static const bool on = fs::is_file("/app0/fs-slowlog.txt");
 			if (!on) return;
 			const auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
-			if (us >= 3000) sys_fs.notice("lab fs-slow: %s(%s) took %lld us", name, arg, us);
+			if (us >= 3000) sys_fs.warning("lab fs-slow: %s(%s) took %lld us", name, arg, us);
 		}
 	};
 }
@@ -1289,7 +1289,24 @@ lv2_file::open_raw_result_t lv2_file::open_raw(const std::string& local_path, s3
 
 	std::lock_guard lock(mp->mutex);
 
+#ifdef __PROSPERO__
+	// lab: split the bridge - the FMV monsters come with open/fstat/close eating
+	// a fixed ~2.78 s each while reads fly. Whose clock is that - the console's
+	// fs driver, or the emulator's own open path? Time the host open alone.
+	const bool fslog_hostopen = fs::is_file("/app0/fs-slowlog.txt");
+	std::chrono::steady_clock::time_point open_t0{};
+	if (fslog_hostopen) open_t0 = std::chrono::steady_clock::now();
+#endif
+
 	fs::file file(local_path, open_mode);
+
+#ifdef __PROSPERO__
+	if (fslog_hostopen)
+	{
+		const auto open_us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - open_t0).count();
+		if (open_us >= 50'000) sys_fs.warning("lab fs-slow-hostopen: %s took %lld us", local_path, open_us);
+	}
+#endif
 
 #ifdef __PROSPERO__
 	// lab: /app0/rpcs3-ramfmv.txt - serve read-only files from a host-RAM cache
@@ -1306,7 +1323,7 @@ lv2_file::open_raw_result_t lv2_file::open_raw(const std::string& local_path, s3
 		if (!ramfmv_announced)
 		{
 			ramfmv_announced = true;
-			sys_fs.notice("lab ramfmv: hook live, flag %s, first read-only open %s (%.0f MB)", ramfmv ? "ON" : "OFF", local_path, file.size() / 1e6);
+			sys_fs.warning("lab ramfmv: hook live, flag %s, first read-only open %s (%.0f MB)", ramfmv ? "ON" : "OFF", local_path, file.size() / 1e6);
 		}
 		if (ramfmv)
 		{
@@ -1340,7 +1357,7 @@ lv2_file::open_raw_result_t lv2_file::open_raw(const std::string& local_path, s3
 						std::lock_guard<std::mutex> g(s_ram_mtx);
 						buf = s_ram_cache.emplace(local_path, std::move(fresh)).first->second;
 						s_ram_used += fsize;
-						sys_fs.notice("lab ramfmv: cached %s (%.0f MB, total %.0f MB)", local_path, fsize / 1e6, s_ram_used / 1e6);
+						sys_fs.warning("lab ramfmv: cached %s (%.0f MB, total %.0f MB)", local_path, fsize / 1e6, s_ram_used / 1e6);
 					}
 				}
 				if (buf)
