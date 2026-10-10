@@ -18,7 +18,40 @@
 #include <span>
 #include <shared_mutex>
 
+#ifdef __PROSPERO__
+#include "Utilities/File.h"
+#include <chrono>
+#endif
+
 LOG_CHANNEL(sys_fs);
+
+#ifdef __PROSPERO__
+// lab: /app0/fs-slowlog.txt - measure what fs syscalls actually cost the game.
+// The FMV blip hunt: HS's preloader runs ~48 open/fcntl/fstat/close cycles per
+// second during cinematics (pure metadata, zero reads) and the frame gaps land
+// on the bursts. Two clock reads per call, a log line only past 3 ms.
+namespace fs_slowlog_detail
+{
+	struct scope_timer
+	{
+		const char* name;
+		std::string arg;
+		std::chrono::steady_clock::time_point t0;
+		scope_timer(const char* n, std::string a)
+			: name(n), arg(std::move(a)), t0(std::chrono::steady_clock::now()) {}
+		~scope_timer()
+		{
+			static const bool on = fs::is_file("/app0/fs-slowlog.txt");
+			if (!on) return;
+			const auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
+			if (us >= 3000) sys_fs.notice("lab fs-slow: %s(%s) took %lld us", name, arg, us);
+		}
+	};
+}
+#define FS_SLOWLOG(fn_name, arg_) fs_slowlog_detail::scope_timer _fs_scope_timer_(fn_name, arg_)
+#else
+#define FS_SLOWLOG(fn_name, arg_)
+#endif
 
 lv2_fs_mount_point g_mp_sys_dev_usb{"/dev_usb", "CELL_FS_FAT", "CELL_FS_IOS:USB_MASS_STORAGE", 512, 0x100, 4096, lv2_mp_flag::no_uid_gid};
 lv2_fs_mount_point g_mp_sys_dev_dvd{"/dev_ps2disc", "CELL_FS_ISO9660", "CELL_FS_IOS:PATA1_BDVD_DRIVE", 2048, 0x100, 32768, lv2_mp_flag::read_only + lv2_mp_flag::no_uid_gid, &g_mp_sys_dev_usb};
@@ -1462,6 +1495,8 @@ error_code sys_fs_open(ppu_thread& ppu, vm::cptr<char> path, s32 flags, vm::ptr<
 		return {path_error, vpath};
 	}
 
+	FS_SLOWLOG("open", vpath);
+
 	auto [error, ppath, real, file, type] = lv2_file::open(vpath, flags, mode, arg.get_ptr(), size);
 
 	if (error)
@@ -1665,6 +1700,8 @@ error_code sys_fs_write(ppu_thread& ppu, u32 fd, vm::cptr<void> buf, u64 nbytes,
 error_code sys_fs_close(ppu_thread& ppu, u32 fd)
 {
 	lv2_obj::sleep(ppu);
+
+	FS_SLOWLOG("close", std::to_string(fd));
 
 	const auto file = idm::get_unlocked<lv2_fs_object, lv2_file>(fd);
 
@@ -1996,6 +2033,8 @@ error_code sys_fs_stat(ppu_thread& ppu, vm::cptr<char> path, vm::ptr<CellFsStat>
 		return {path_error, vpath};
 	}
 
+	FS_SLOWLOG("stat", vpath);
+
 	const std::string local_path = vfs::get(vpath);
 
 	const auto& mp = g_fxo->get<lv2_fs_mount_info_map>().lookup(vpath);
@@ -2113,6 +2152,8 @@ error_code sys_fs_stat(ppu_thread& ppu, vm::cptr<char> path, vm::ptr<CellFsStat>
 error_code sys_fs_fstat(ppu_thread& ppu, u32 fd, vm::ptr<CellFsStat> sb)
 {
 	lv2_obj::sleep(ppu);
+
+	FS_SLOWLOG("fstat", std::to_string(fd));
 
 	sys_fs.warning("sys_fs_fstat(fd=%d, sb=*0x%x)", fd, sb);
 
