@@ -3394,6 +3394,12 @@ void ppu_trap(ppu_thread& ppu, u64 addr)
 	// If stubbing is enabled, check current instruction and the following
 	if (!add || !vm::check_addr(ppu.cia, vm::page_executable) || !vm::check_addr(ppu.cia + add, vm::page_executable))
 	{
+#ifdef __PROSPERO__
+		// lab: the gpuhang dump - the game's own watchdog tries /app_home/content_ps3/
+		// gpuhang.bin and dies on the sandbox's EPERM; we write the RSX state instead
+		extern void ps5_dump_trap(ppu_thread&, u64);
+		ps5_dump_trap(ppu, addr);
+#endif
 		fmt::throw_exception("PPU Trap! Sometimes tweaking the setting \"Stub PPU Traps\" can be a workaround to this crash.\nBest values depend on game code, if unsure try 1.");
 	}
 

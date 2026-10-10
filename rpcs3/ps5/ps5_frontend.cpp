@@ -92,6 +92,7 @@ std::u32string utf8_to_u32string(std::string_view utf8_string);
 u32 spu_accurate_xfloat_functions(); // SPULLVMRecompiler.cpp: collision functions compiled with accurate xfloat
 extern atomic_t<u64> g_ps5_getllar_waits[64][2]; // SPUThread.cpp: each SPU slot's GETLLAR polls answered by busy waiting, and by sleeping
 extern atomic_t<u32> g_ps5_rsx_op; // VKPresent.cpp: the RSX thread's current op (the monster trap)
+
 extern atomic_t<u64> g_ps5_mfc_claims[64][2]; // SPUThread.cpp: GETLLAR vs PUTLLC issue counts (lab claim-probe)
 extern atomic_t<u64> g_ps5_frames_generated; // VKFrameGen.cpp: frames made between the game's
 
@@ -122,6 +123,7 @@ namespace
 			g_trace(fmt::format(format, args...).c_str());
 		}
 	}
+
 
 	// The PS3's threads' loads, sampled. The console reports no CPU time per
 	// thread or for the process: a thread's CPU clock runs with the wall clock
@@ -803,6 +805,44 @@ namespace
 	}
 }
 
+
+// lab: the gpuhang dump - the game's own watchdog dies on a sandbox EPERM writing
+// /app_home/content_ps3/gpuhang.bin, so the evidence dies with it. We write it
+// instead: on every fatal PPU trap, the RSX/FIFO state that names the hung GPU op.
+void ps5_dump_trap(ppu_thread& ppu, u64 addr)
+{
+	std::string out;
+	fmt::append(out, "trap at 0x%x in %s (lr 0x%llx)\n", ppu.cia, ppu.get_name(), ppu.lr);
+	if (const auto render = rsx::get_current_renderer())
+	{
+		if (render->ctrl)
+		{
+			fmt::append(out, "FIFO: GET=0x%07x PUT=0x%07x REF=0x%08x | flips %u | rsx_op %u\n",
+				+render->ctrl->get, +render->ctrl->put, +render->ctrl->ref, render->int_flip_index, g_ps5_rsx_op.load());
+			// the command that hung the GPU: the words just before GET in the guest's ring
+			const u32 get = +render->ctrl->get;
+			std::string tail;
+			for (u32 a = get > 64 ? get - 64 : get; a < get; a += 4)
+			{
+				if (vm::check_addr(a, vm::page_readable, 4))
+					fmt::append(tail, " %08x", vm::read32(a));
+			}
+			fmt::append(out, "FIFO words before GET:%s\n", tail);
+		}
+	}
+	idm::select<named_thread<spu_thread>>([&](u32, spu_thread& spu)
+	{
+		const auto& c = spu.ch_mfc_cmd;
+		fmt::append(out, "SPU %s pc 0x%x | pending MFC %x tag %u size %u eal %x | tm %x ts %u\n",
+			spu.get_name(), spu.pc, +c.cmd, c.tag, c.size, c.eal, +spu.ch_tag_mask, spu.ch_tag_stat.get_count());
+	});
+	if (FILE* f = std::fopen("/app0/rpcs3-trap-dump.txt", "wb"))
+	{
+		std::fwrite(out.data(), 1, out.size(), f);
+		std::fclose(f);
+	}
+	trace("lab: trap state written to /app0/rpcs3-trap-dump.txt");
+}
 // What the Qt frontend defines for the emulator, without Qt
 
 // The input configurations (rpcs3qt/pad_settings_dialog.cpp on the desktop)
