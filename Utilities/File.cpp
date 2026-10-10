@@ -2323,6 +2323,15 @@ fs::file::file(const void* ptr, usz size)
 		{
 			return m_size;
 		}
+
+		// lab: the FMV RAM cache serves these to games that probe open->fstat->close
+		// (HS's fios scheduler); the base get_stat() throws and killed the thread.
+		stat_t get_stat() override
+		{
+			stat_t st{};
+			st.size = m_size;
+			return st;
+		}
 	};
 
 	m_file = std::make_unique<memory_stream>(ptr, size);
