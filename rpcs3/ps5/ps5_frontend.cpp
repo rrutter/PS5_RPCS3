@@ -1452,6 +1452,31 @@ int run(const char* boot_path)
 							}
 							trace("lab kpark-pulse: %s LS[2d80]:%s | rdata:%s | live[+80]:%s", spu.get_name(), lsv, rdv, liv);
 						}
+						// lab: the task-stuck trap - a kernel parked in TASK code (past the
+						// kernel's own region) and not moving across pulses = the old freeze's
+						// signature (a lost DMA completion hangs the SPURS job). Dump the pending
+						// MFC command: the stuck DMA's target, size and tag state name the disease.
+						{
+							const u32 ix = spu.index & 7;
+							static u32 s_task_pc[8] = {};
+							static int s_task_still[8] = {};
+							const bool in_task = spu.pc >= 0x1400; // past the kernel's own code
+							if (in_task && spu.pc == s_task_pc[ix])
+							{
+								if (++s_task_still[ix] == 2)
+								{
+									const auto& c = spu.ch_mfc_cmd;
+									trace("lab task-stuck: %s pc 0x%x | pending MFC cmd 0x%x tag %u size %u lsa 0x%x eal 0x%x eah 0x%x | tag_mask %x fence %x barrier %x tagstat %u",
+										spu.get_name(), spu.pc, +c.cmd, c.tag, c.size, c.lsa, c.eal, c.eah,
+										+spu.ch_tag_mask, spu.mfc_fence, spu.mfc_barrier, spu.ch_tag_stat.get_count());
+								}
+							}
+							else
+							{
+								s_task_pc[ix] = spu.pc;
+								s_task_still[ix] = 0;
+							}
+						}
 						if (spus.size() < 640)
 						{
 							// lab: mailbox occupancy + WHAT the thread waits on: tag mask vs tag
