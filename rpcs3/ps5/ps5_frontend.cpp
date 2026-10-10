@@ -91,6 +91,7 @@ std::u32string utf8_to_u32string(std::string_view utf8_string);
 
 u32 spu_accurate_xfloat_functions(); // SPULLVMRecompiler.cpp: collision functions compiled with accurate xfloat
 extern atomic_t<u64> g_ps5_getllar_waits[64][2]; // SPUThread.cpp: each SPU slot's GETLLAR polls answered by busy waiting, and by sleeping
+extern atomic_t<u32> g_ps5_rsx_op; // VKPresent.cpp: the RSX thread's current op (the monster trap)
 extern atomic_t<u64> g_ps5_mfc_claims[64][2]; // SPUThread.cpp: GETLLAR vs PUTLLC issue counts (lab claim-probe)
 extern atomic_t<u64> g_ps5_frames_generated; // VKFrameGen.cpp: frames made between the game's
 
@@ -1220,6 +1221,31 @@ int run(const char* boot_path)
 							trace("hitch: %llu ms frame gap (flips %u -> %u)", (now - last_flip_time) / 1000, last_flips, flips);
 						last_flips = flips;
 						last_flip_time = now;
+					}
+					// lab: the monster trap - while a big gap is LIVE (not after), every
+					// 500 ms name who's holding the frame: the RSX thread's current op,
+					// main_thread's pc/lr, and each SPURS kernel's pc. The monster gets
+					// photographed mid-act instead of autopsied after.
+					else if (last_flips && now - last_flip_time > 800'000)
+					{
+						static u64 last_snap = 0;
+						if (now - last_snap > 500'000)
+						{
+							last_snap = now;
+							std::string s;
+							fmt::append(s, "rsx_op %u", g_ps5_rsx_op.load());
+							idm::select<named_thread<ppu_thread>>([&](u32, ppu_thread& ppu)
+							{
+								if (ppu.id == 0x1000000)
+									fmt::append(s, " | main pc 0x%x lr 0x%llx", ppu.cia, ppu.lr);
+							});
+							std::string ks;
+							idm::select<named_thread<spu_thread>>([&](u32, spu_thread& spu)
+							{
+								fmt::append(ks, " %x", spu.pc);
+							});
+							trace("monster-live: %s | spu pcs:%s", s, ks);
+						}
 					}
 				}
 			});

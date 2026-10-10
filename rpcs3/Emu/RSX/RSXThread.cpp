@@ -50,6 +50,13 @@ extern CellGcmOffsetTable offsetTable;
 extern thread_local std::string(*g_tls_log_prefix)();
 extern atomic_t<u32> g_lv2_preempts_taken;
 
+#ifdef __PROSPERO__
+// lab: the monster trap - mark the RSX thread's current op for the live gap
+// snapshotter (ps5_frontend.cpp's hitch watch)
+extern atomic_t<u32> g_ps5_rsx_op;
+namespace { struct ps5_rsx_op_guard { u32 prev; ps5_rsx_op_guard(u32 op) : prev(g_ps5_rsx_op.exchange(op)) {} ~ps5_rsx_op_guard() { g_ps5_rsx_op.store(prev); } }; }
+#endif
+
 LOG_CHANNEL(perf_log, "PERF");
 
 template <>
@@ -1074,6 +1081,9 @@ namespace rsx
 
 	void thread::on_task()
 	{
+#ifdef __PROSPERO__
+		ps5_rsx_op_guard ps5_op(1); // 1 = FIFO/command processing
+#endif
 		g_tls_log_prefix = []
 		{
 			const auto rsx = get_current_renderer();

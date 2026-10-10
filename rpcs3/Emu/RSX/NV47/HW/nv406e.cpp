@@ -2,6 +2,12 @@
 #include "nv406e.h"
 #include "nv47_sync.hpp"
 
+#ifdef __PROSPERO__
+// lab: the monster trap - mark semaphore waits for the live gap snapshotter
+extern atomic_t<u32> g_ps5_rsx_op;
+namespace { struct ps5_rsx_op_guard { u32 prev; ps5_rsx_op_guard(u32 op) : prev(g_ps5_rsx_op.exchange(op)) {} ~ps5_rsx_op_guard() { g_ps5_rsx_op.store(prev); } }; }
+#endif
+
 #include "Emu/RSX/RSXThread.h"
 #include "Emu/system_config.h"
 
@@ -57,6 +63,9 @@ namespace rsx
 			u64 start = get_system_time();
 			u64 last_check_val = start;
 
+#ifdef __PROSPERO__
+			ps5_rsx_op_guard ps5_op(3); // 3 = semaphore acquire wait
+#endif
 			while (sema != arg)
 			{
 				if (RSX(ctx)->test_stopped())

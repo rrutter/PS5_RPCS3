@@ -425,8 +425,26 @@ vk::viewable_image* VKGSRender::get_present_source(/* inout */ vk::present_surfa
 	return image_to_flip;
 }
 
+#ifdef __PROSPERO__
+// lab: the monster trap - the RSX thread's current operation, for the live
+// gap snapshotter (ps5_frontend.cpp's hitch watch). Nesting-safe guard.
+atomic_t<u32> g_ps5_rsx_op{};
+namespace
+{
+	struct rsx_op_guard
+	{
+		u32 prev;
+		rsx_op_guard(u32 op) : prev(g_ps5_rsx_op.exchange(op)) {}
+		~rsx_op_guard() { g_ps5_rsx_op.store(prev); }
+	};
+}
+#endif
+
 void VKGSRender::flip(const rsx::display_flip_info_t& info)
 {
+#ifdef __PROSPERO__
+	rsx_op_guard ps5_op(2); // 2 = present/flip
+#endif
 	// Check swapchain condition/status
 	if (!m_swapchain->supports_automatic_wm_reports())
 	{
