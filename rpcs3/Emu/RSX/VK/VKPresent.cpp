@@ -428,13 +428,15 @@ vk::viewable_image* VKGSRender::get_present_source(/* inout */ vk::present_surfa
 #ifdef __PROSPERO__
 // lab: the monster trap - the RSX thread's current operation, for the live
 // gap snapshotter (ps5_frontend.cpp's hitch watch). Nesting-safe guard.
+extern "C" int32_t sceKernelGetCurrentCpu(void);
 atomic_t<u32> g_ps5_rsx_op{};
+atomic_t<int> g_ps5_rsx_core{-1}; // the core the RSX thread is running on (the census)
 namespace
 {
 	struct rsx_op_guard
 	{
 		u32 prev;
-		rsx_op_guard(u32 op) : prev(g_ps5_rsx_op.exchange(op)) {}
+		rsx_op_guard(u32 op) : prev(g_ps5_rsx_op.exchange(op)) { g_ps5_rsx_core.store(sceKernelGetCurrentCpu()); }
 		~rsx_op_guard() { g_ps5_rsx_op.store(prev); }
 	};
 }

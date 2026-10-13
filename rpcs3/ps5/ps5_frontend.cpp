@@ -11,6 +11,8 @@
 #include "ps5_frontend.h"
 
 #include <sys/stat.h>
+#include <pthread.h>
+#include <sched.h>
 
 std::string ps5_open_files_report(); // ps5_fdtrack.cpp
 #include "ps5_gs_frame.h"
@@ -95,6 +97,18 @@ extern atomic_t<u32> g_ps5_rsx_op; // VKPresent.cpp: the RSX thread's current op
 
 extern atomic_t<u64> g_ps5_mfc_claims[64][2]; // SPUThread.cpp: GETLLAR vs PUTLLC issue counts (lab claim-probe)
 extern atomic_t<u64> g_ps5_frames_generated; // VKFrameGen.cpp: frames made between the game's
+extern atomic_t<int> g_ps5_rsx_core; // VKPresent.cpp: the core the RSX thread is running on (rsx_op_guard)
+
+// lab: the RADV driver probes (linked whole into the title). The conviction pair:
+// the completed submission sequence number (the GPU's progress) + the submit-stage timers.
+extern "C" {
+	struct radv_ps5_queue;
+	struct radv_ps5_queue* radv_ps5_queue_get(void);
+	uint64_t radv_ps5_queue_poll(struct radv_ps5_queue*); // completed seq, non-blocking, any thread
+	void radv_ps5_submit_times(uint64_t times[3]); // [0] cache-flush ns, [1] sceAgcDriverSubmitDcb ns, [2] kick sceAgcSuspendPoint ns
+}
+
+void ps5_thread_census(u64 now, u64 gap_start); // the thread census (below) - the conviction instrument
 
 // lab: the SPURS-kernel block trail + mega ring (defined in SPUThread.cpp)
 extern std::atomic<u32> g_spu_trail_idx[];
@@ -843,6 +857,57 @@ void ps5_dump_trap(ppu_thread& ppu, u64 addr)
 	}
 	trace("lab: trap state written to /app0/rpcs3-trap-dump.txt");
 }
+
+// lab: the thread census - the conviction instrument (the thread-swarm's design).
+// During a LIVE mega-stall, photograph EVERY thread: its policy/priority, its
+// affinity mask, running-vs-parked, and where its pc sits - plus the GPU's
+// completed-seq. This separates a CPU-scheduling crime (a starved/migrating
+// producer) from a GPU-execution crime (work submitted, the marker frozen).
+void ps5_thread_census(u64 now, u64 gap_start)
+{
+	if (!Emu.IsRunning()) return; // the build-88 race: idm can reset under us
+
+	std::string out;
+	const u64 gap_ms = (now - gap_start) / 1000;
+	fmt::append(out, "\n=== census: gap %llu ms (t %llu ms) ===\n", gap_ms, now / 1000);
+
+	// the RSX / GPU record
+	if (const auto render = rsx::get_current_renderer())
+	{
+		u64 gpu_seq = 0, times[3] = {0, 0, 0};
+		if (auto* q = radv_ps5_queue_get()) gpu_seq = radv_ps5_queue_poll(q);
+		radv_ps5_submit_times(times);
+		fmt::append(out, "RSX op %u core %d | GET 0x%07x PUT 0x%07x | flips %u generated %llu | gpu completed seq %llu | submit: flush %llu agc %llu kick %llu us\n",
+			g_ps5_rsx_op.load(), g_ps5_rsx_core.load(),
+			render->ctrl ? +render->ctrl->get : 0, render->ctrl ? +render->ctrl->put : 0,
+			render->int_flip_index, +g_ps5_frames_generated, gpu_seq,
+			times[0] / 1000, times[1] / 1000, times[2] / 1000);
+	}
+
+	// every guest thread: running-vs-parked + where its pc sits (the conviction
+	// data). Priority/affinity are uniform today (all 700 FIFO, full mask, bar the
+	// 600 caste) - the boot census captures the mask; per-thread masks get added
+	// the day we actually pin threads.
+	const auto census = [&](const char* kind, auto& thr, u32 pc)
+	{
+		fmt::append(out, "  %s %-26s %s pc 0x%x\n", kind, thr.get_name(), is_running(thr) ? "RUN " : "park", pc);
+	};
+	idm::select<named_thread<ppu_thread>>([&](u32, ppu_thread& ppu) { census("PPU", ppu, ppu.cia); });
+	idm::select<named_thread<spu_thread>>([&](u32, spu_thread& spu)
+	{
+		census("SPU", spu, spu.pc);
+		const auto& c = spu.ch_mfc_cmd; // a stuck DMA names the lost completion
+		if (+c.cmd)
+			fmt::append(out, "       pending MFC cmd 0x%x tag %u size %u eal 0x%x | tm 0x%x\n", +c.cmd, c.tag, c.size, c.eal, +spu.ch_tag_mask);
+	});
+
+	if (FILE* f = std::fopen("/app0/rpcs3-threadcensus.txt", "a"))
+	{
+		std::fwrite(out.data(), 1, out.size(), f);
+		std::fclose(f);
+	}
+	trace("census: gap %llu ms, rsx_op %u core %d (rpcs3-threadcensus.txt)", gap_ms, g_ps5_rsx_op.load(), g_ps5_rsx_core.load());
+}
 // What the Qt frontend defines for the emulator, without Qt
 
 // The input configurations (rpcs3qt/pad_settings_dialog.cpp on the desktop)
@@ -1019,6 +1084,17 @@ int run(const char* boot_path)
 			if (fs::is_file(std::string("/app0/") + f))
 				fmt::append(flags, " %s", f);
 		trace("lab roll-call: core %012llx | flags:%s", core_hash, flags.empty() ? " (none)" : flags);
+
+		// lab: the baseline census - the REAL core budget. sysconf lies (16) while a
+		// title's threads run on fewer cores; every pool in the emulator sizes off the
+		// lie. Measure the truth at boot so no flight ever sizes against phantom cores.
+		{
+			uint64_t boot_mask = 0;
+			const int np = scePthreadGetaffinity(pthread_self(), &boot_mask);
+			trace("lab census: affinity mask 0x%llx = %d usable CPUs (sysconf reports %u) | current cpu %d | %s",
+				boot_mask, np == 0 ? __builtin_popcountll(boot_mask) : -1, utils::get_thread_count(),
+				sceKernelGetCurrentCpu(), np == 0 ? "the mask is the truth" : "getaffinity FAILED");
+		}
 	}
 
 
@@ -1272,8 +1348,11 @@ int run(const char* boot_path)
 						if (now - last_snap > 500'000)
 						{
 							last_snap = now;
+							// lab: the full thread census - every thread's core/priority/affinity/pc
+							// plus the GPU's completed seq. The conviction instrument.
+							ps5_thread_census(now, last_flip_time);
 							std::string s;
-							fmt::append(s, "rsx_op %u", g_ps5_rsx_op.load());
+							fmt::append(s, "rsx_op %u core %d", g_ps5_rsx_op.load(), g_ps5_rsx_core.load());
 							idm::select<named_thread<ppu_thread>>([&](u32, ppu_thread& ppu)
 							{
 								if (ppu.id == 0x1000000)

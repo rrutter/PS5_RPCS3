@@ -4432,7 +4432,7 @@ bool spu_thread::process_mfc_cmd()
 
 		const u32 addr = ch_mfc_cmd.eal & -128;
 		spu_mega_log(*this, "getllar", addr, 0, 0); // lab
-		g_ps5_mfc_claims[index % 64][0].raw()++; // lab: claim-probe
+		g_ps5_mfc_claims[lv2_id % 64][0].raw()++; // lab: claim-probe
 		const auto& data = vm::_ref<spu_rdata_t>(addr);
 
 		if (addr == last_faddr)
@@ -4578,7 +4578,7 @@ bool spu_thread::process_mfc_cmd()
 							if (getllar_busy_waiting_switch == 1)
 							{
 #ifdef __PROSPERO__
-								g_ps5_getllar_waits[index % 64][0].raw()++;
+								g_ps5_getllar_waits[lv2_id % 64][0].raw()++;
 #endif
 								getllar_wait_time[(addr % SPU_LS_SIZE) / 128].front() = 0;
 
@@ -4625,7 +4625,7 @@ bool spu_thread::process_mfc_cmd()
 
 						// Spinning, might as well yield cpu resources
 #ifdef __PROSPERO__
-						g_ps5_getllar_waits[index % 64][1].raw()++;
+						g_ps5_getllar_waits[lv2_id % 64][1].raw()++;
 #endif
 						state += cpu_flag::wait;
 
@@ -4814,7 +4814,7 @@ bool spu_thread::process_mfc_cmd()
 	{
 		// Avoid logging useless commands if there is no reservation
 		const bool dump = g_cfg.core.mfc_debug && raddr;
-		g_ps5_mfc_claims[index % 64][1].raw()++; // lab: claim-probe
+		g_ps5_mfc_claims[lv2_id % 64][1].raw()++; // lab: claim-probe
 
 		const bool is_spurs_task_wait = pc == 0x11e4 && spurs_addr != 0u - 0x80u;
 
