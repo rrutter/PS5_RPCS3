@@ -1210,9 +1210,24 @@ lv2_file::open_raw_result_t lv2_file::open_raw(const std::string& local_path, s3
 {
 	// TODO: other checks for path
 
+	// lab: stage timers - the FMV metadata calls take a flat ~2.7s but the host
+	// open is fast (<50ms). Which stage eats it: the is_dir/is_file host stats
+	// (exFAT directory traversal over USB), or the mount-mutex queue? Measure each.
+	const bool fslog_stages = fs::is_file("/app0/fs-slowlog.txt");
+	std::chrono::steady_clock::time_point st_t0{};
+	long long st_isdir_us = 0, st_mutex_us = 0;
+	if (fslog_stages) st_t0 = std::chrono::steady_clock::now();
+
 	if (fs::is_dir(local_path))
 	{
 		return {CELL_EISDIR};
+	}
+
+	if (fslog_stages)
+	{
+		const auto t = std::chrono::steady_clock::now();
+		st_isdir_us = std::chrono::duration_cast<std::chrono::microseconds>(t - st_t0).count();
+		st_t0 = t;
 	}
 
 	bs_t<fs::open_mode> open_mode{};
@@ -1287,7 +1302,21 @@ lv2_file::open_raw_result_t lv2_file::open_raw(const std::string& local_path, s3
 		fmt::throw_exception("lv2_file::open_raw(): Invalid or unimplemented flags: %#o", flags);
 	}
 
+	if (fslog_stages)
+	{
+		const auto t_pre = std::chrono::steady_clock::now();
+		st_mutex_us = 0; // (the mutex acquire is timed by the block below)
+		(void)t_pre;
+	}
+
+	std::chrono::steady_clock::time_point mtx_t0{};
+	if (fslog_stages) mtx_t0 = std::chrono::steady_clock::now();
 	std::lock_guard lock(mp->mutex);
+	if (fslog_stages)
+	{
+		const auto t = std::chrono::steady_clock::now();
+		st_mutex_us = std::chrono::duration_cast<std::chrono::microseconds>(t - mtx_t0).count();
+	}
 
 #ifdef __PROSPERO__
 	// lab: split the bridge - the FMV monsters come with open/fstat/close eating
@@ -1305,6 +1334,9 @@ lv2_file::open_raw_result_t lv2_file::open_raw(const std::string& local_path, s3
 	{
 		const auto open_us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - open_t0).count();
 		if (open_us >= 50'000) sys_fs.warning("lab fs-slow-hostopen: %s took %lld us", local_path, open_us);
+		// lab: the stage breakdown - name the 2.7s stage (isdir vs mutex vs open)
+		if (fslog_stages && (st_isdir_us + st_mutex_us + open_us) >= 100'000)
+			sys_fs.warning("lab fs-stages: %s | is_dir %lld us | mutex %lld us | host-open %lld us", local_path, st_isdir_us, st_mutex_us, open_us);
 	}
 #endif
 
