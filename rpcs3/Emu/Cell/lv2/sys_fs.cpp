@@ -1652,7 +1652,7 @@ error_code sys_fs_open(ppu_thread& ppu, vm::cptr<char> path, s32 flags, vm::ptr<
 		// latency on the deep 700-priority runqueue. Bracket both.
 		fs_slowlog_detail::scope_timer _idm_t("open.idm_import", std::string(vpath));
 #endif
-	id = idm::import<lv2_fs_object, lv2_file>([&ppath = ppath, &file = file, mode, flags, &real = real, &type = type]() -> shared_ptr<lv2_file>
+	id = idm::import<lv2_fs_object, lv2_file>([&ppath = ppath, &file = file, mode, flags, &real = real, &type = type, &vpath = vpath]() -> shared_ptr<lv2_file>
 	{
 		shared_ptr<lv2_file> result;
 
@@ -1662,7 +1662,16 @@ error_code sys_fs_open(ppu_thread& ppu, vm::cptr<char> path, s32 flags, vm::ptr<
 		}
 
 		result = stx::make_shared<lv2_file>(ppath, std::move(file), mode, flags, real, type);
+#ifdef __PROSPERO__
+		{
+			// lab: the provider runs UNDER the idm global lock. Is the 2.7s the lock
+			// wait, or this log write it holds the lock through? Time the write alone.
+			fs_slowlog_detail::scope_timer _lw_t("open.logwrite", std::string(vpath));
+			sys_fs.warning("sys_fs_open(): fd=%u, %s", idm::last_id(), *result);
+		}
+#else
 		sys_fs.warning("sys_fs_open(): fd=%u, %s", idm::last_id(), *result);
+#endif
 		return result;
 	});
 #ifdef __PROSPERO__
