@@ -34,6 +34,8 @@ LOG_CHANNEL(sys_fs);
 // The FMV blip hunt: HS's preloader runs ~48 open/fcntl/fstat/close cycles per
 // second during cinematics (pure metadata, zero reads) and the frame gaps land
 // on the bursts. Two clock reads per call, a log line only past 3 ms.
+extern "C" int32_t sceKernelGetCurrentCpu(void);
+
 namespace fs_slowlog_detail
 {
 	struct scope_timer
@@ -41,14 +43,19 @@ namespace fs_slowlog_detail
 		const char* name;
 		std::string arg;
 		std::chrono::steady_clock::time_point t0;
+		int core0;
 		scope_timer(const char* n, std::string a)
-			: name(n), arg(std::move(a)), t0(std::chrono::steady_clock::now()) {}
+			: name(n), arg(std::move(a)), t0(std::chrono::steady_clock::now()), core0(sceKernelGetCurrentCpu()) {}
 		~scope_timer()
 		{
 			static const bool on = fs::is_file("/app0/fs-slowlog.txt");
 			if (!on) return;
 			const auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
-			if (us >= 3000) sys_fs.warning("lab fs-slow: %s(%s) took %lld us", name, arg, us);
+			// lab: the work-vs-preemption discriminator. If the thread changed cores
+			// mid-call it was descheduled (a SCHEDULING crime, not real fs work);
+			// same core the whole time = the fs path itself burned the clock.
+			const int core1 = sceKernelGetCurrentCpu();
+			if (us >= 3000) sys_fs.warning("lab fs-slow: %s(%s) took %lld us | core %d->%d %s", name, arg, us, core0, core1, core0 != core1 ? "MIGRATED" : "same-core");
 		}
 	};
 }
@@ -1210,6 +1217,10 @@ lv2_file::open_raw_result_t lv2_file::open_raw(const std::string& local_path, s3
 {
 	// TODO: other checks for path
 
+	// lab: the open_raw total - brackets everything from entry to return, so the
+	// syscall's 2.7s splits into vfsget / open_raw / the syscall tail.
+	fs_slowlog_detail::scope_timer _fs_raw_total_("open.raw_total", local_path);
+
 	// lab: stage timers - the FMV metadata calls take a flat ~2.7s but the host
 	// open is fast (<50ms). Which stage eats it: the is_dir/is_file host stats
 	// (exFAT directory traversal over USB), or the mount-mutex queue? Measure each.
@@ -1563,7 +1574,17 @@ lv2_file::open_result_t lv2_file::open(std::string_view vpath, s32 flags, s32 /*
 	}
 
 	std::string path;
-	std::string local_path = vfs::get(vpath, nullptr, &path);
+	std::string local_path;
+#ifdef __PROSPERO__
+	{
+		// lab: time the path resolution separately - is the 2.7s HERE (a guest->host
+		// path walk), not in the open at all?
+		fs_slowlog_detail::scope_timer _vfs_t("open.vfsget", std::string(vpath));
+		local_path = vfs::get(vpath, nullptr, &path);
+	}
+#else
+	local_path = vfs::get(vpath, nullptr, &path);
+#endif
 
 	const auto& mp = g_fxo->get<lv2_fs_mount_info_map>().lookup(vpath);
 
