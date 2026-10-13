@@ -1644,7 +1644,15 @@ error_code sys_fs_open(ppu_thread& ppu, vm::cptr<char> path, s32 flags, vm::ptr<
 		return {g_fxo->get<lv2_fs_mount_info_map>().lookup(vpath) == &g_mp_sys_dev_hdd1 ? sys_fs.warning : sys_fs.error, error, path};
 	}
 
-	if (const u32 id = idm::import<lv2_fs_object, lv2_file>([&ppath = ppath, &file = file, mode, flags, &real = real, &type = type]() -> shared_ptr<lv2_file>
+	u32 id = 0;
+#ifdef __PROSPERO__
+	{
+		// lab: the syscall tail - vfsget and open_raw are both fast, so the 2.7s is
+		// HERE: the idm global lock, or the check_state yield paying RR-reschedule
+		// latency on the deep 700-priority runqueue. Bracket both.
+		fs_slowlog_detail::scope_timer _idm_t("open.idm_import", std::string(vpath));
+#endif
+	id = idm::import<lv2_fs_object, lv2_file>([&ppath = ppath, &file = file, mode, flags, &real = real, &type = type]() -> shared_ptr<lv2_file>
 	{
 		shared_ptr<lv2_file> result;
 
@@ -1656,9 +1664,19 @@ error_code sys_fs_open(ppu_thread& ppu, vm::cptr<char> path, s32 flags, vm::ptr<
 		result = stx::make_shared<lv2_file>(ppath, std::move(file), mode, flags, real, type);
 		sys_fs.warning("sys_fs_open(): fd=%u, %s", idm::last_id(), *result);
 		return result;
-	}))
+	});
+#ifdef __PROSPERO__
+	}
 	{
+		fs_slowlog_detail::scope_timer _cs_t("open.check_state", std::string(vpath));
+		if (id) ppu.check_state();
+	}
+#endif
+	if (id)
+	{
+#ifndef __PROSPERO__
 		ppu.check_state();
+#endif
 		*fd = id;
 		return CELL_OK;
 	}
