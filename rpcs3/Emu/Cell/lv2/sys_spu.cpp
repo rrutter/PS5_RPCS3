@@ -1619,6 +1619,26 @@ error_code sys_spu_thread_group_terminate(ppu_thread& ppu, u32 id, s32 value)
 		vm::reservation_notifier_notify(prev_resv, prev_time);
 	}
 
+#ifdef __PROSPERO__
+	// lab: the teardown must reach EVERY kernel, not just the ones carrying
+	// cpu_flag::wait at scan time. A kernel parked in the LR/reservation wait via
+	// the one-time-callback path, or JIT busy-waiting, is skipped by the gate above,
+	// never sees stop+ret, never exits - so running never hits 0 and the join hangs
+	// (the task-stuck freeze). Force-wake every live thread: ring the thread, the
+	// reservation line, AND the LR event doorbell (SPU_EVENT_LR is in the kernels'
+	// event mask), so no kernel sleeps through its own teardown.
+	for (auto& thread : group->threads)
+	{
+		if (thread && !(thread->state & cpu_flag::exit))
+		{
+			thread_ctrl::notify(*thread);
+			if (const u32 resv = atomic_storage<u32>::load(thread->raddr))
+				vm::reservation_notifier_notify(resv, thread->rtime);
+			static_cast<spu_thread&>(*thread).set_events(SPU_EVENT_LR);
+		}
+	}
+#endif
+
 	group->exit_status = value;
 	group->join_state = SYS_SPU_THREAD_GROUP_JOIN_TERMINATED;
 

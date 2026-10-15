@@ -39,6 +39,7 @@ std::string ps5_open_files_report(); // ps5_fdtrack.cpp
 #include "Emu/Cell/SPUThread.h"
 #include <fstream>
 #include "Emu/Cell/Modules/cellSpurs.h"
+#include "Emu/Cell/lv2/sys_spu.h"
 #include "Emu/RSX/RSXThread.h"
 #include "Emu/Io/pad_config.h"
 #include "Emu/Io/KeyboardHandler.h"
@@ -1403,6 +1404,43 @@ int run(const char* boot_path)
 						continue;
 					}
 					const auto render = rsx::get_current_renderer();
+
+					// lab: the SPURS-teardown tripwire. The structural fix (force-wake-all in
+					// sys_spu_thread_group_terminate) should make wedged teardowns impossible.
+					// If a group still sits mid-teardown with a kernel that won't die, the fix
+					// faceplanted - fire ONE cheap marker pointing the direction (no story-
+					// tracing; if it fires we instrument deeper). Fail fast, iterate.
+					{
+						// lab-only tripwire: armed by /app0/spurs-dump.txt (the lab carries it,
+						// the bow does not - the bow assumes the fix won). Inert where unarmed.
+						static const bool s_wedge_armed = fs::is_file("/app0/spurs-dump.txt");
+						if (!s_wedge_armed) { /* the bow: assumes the fix won, no tripwire */ }
+						else
+						{
+						struct wedge_track { u32 running; int pulses; };
+						static std::map<u32, wedge_track> s_wedges;
+						std::set<u32> seen;
+						idm::select<lv2_spu_group>([&](u32, lv2_spu_group& g)
+						{
+							if (!g.set_terminate) return; // only groups being torn down
+							const u32 run = +g.running;
+							seen.insert(g.id);
+							auto& tr = s_wedges[g.id];
+							if (tr.running == run) tr.pulses++; else { tr.running = run; tr.pulses = 0; }
+							if (run > 0 && tr.pulses == 2) // stuck ~10s mid-teardown = the fix didn't hold
+							{
+								std::string ks;
+								for (auto& t : g.threads)
+									if (t && !(t->state & cpu_flag::exit))
+										fmt::append(ks, " [%s pc 0x%x raddr 0x%x]", t->get_name(), t->pc, +t->raddr);
+								trace("lab: SPURS-TEARDOWN WEDGE - group 0x%x (%s) running %u stuck; a kernel won't die:%s << the doorbell fix didn't hold; look at the LR/reservation wake",
+									g.id, g.name, run, ks);
+							}
+						});
+						for (auto it = s_wedges.begin(); it != s_wedges.end();)
+							if (!seen.count(it->first)) it = s_wedges.erase(it); else ++it;
+						} // else (tripwire armed)
+					}
 
 					// lab: with the mega flag up, drain the ring into the trace every pulse
 					// (the FULL history in slices - the wedge phase, not just the tail)
