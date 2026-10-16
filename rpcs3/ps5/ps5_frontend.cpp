@@ -1007,6 +1007,17 @@ void ps5_thread_census(u64 now, u64 gap_start)
 		for (u32 o = 0; o < 128; o += 4) fmt::append(out, " %08x", +vm::read32(0x5ad02f80 + o));
 		fmt::append(out, "\n");
 	}
+	// lab: dump the SPURS instance contention region (0x5631a300) - the GHOST-COUNTER read.
+	// Layout (cellSpurs.h): wklReadyCount1[+0x00] wklCurrentContention[+0x20] wklPendingContention
+	// [+0x30] wklMinContention[+0x40] wklMaxContention[+0x50] wklSignal1[+0x70] spuIdling[+0x73]
+	// nSpus[+0x76] wklState1[+0x80] wklStatus1[+0x90]. The wedge: a workload 'ready but not
+	// startable' (wklCurrentContention stuck at max with idle kernels) = the ghost counter.
+	if (vm::check_addr(0x5631a300, vm::page_readable, 160))
+	{
+		fmt::append(out, "       spurs contention 0x5631a300:");
+		for (u32 o = 0; o < 160; o += 4) fmt::append(out, " %08x", +vm::read32(0x5631a300 + o));
+		fmt::append(out, "\n");
+	}
 
 	if (FILE* f = std::fopen("/app0/rpcs3-threadcensus.txt", "a"))
 	{
