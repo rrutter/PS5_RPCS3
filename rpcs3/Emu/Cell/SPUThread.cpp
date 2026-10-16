@@ -1395,6 +1395,16 @@ void spu_thread::cpu_init()
 
 void spu_thread::cpu_return()
 {
+	// lab: the dropped-completion pointer (the lost-DMA freeze's root). A kernel
+	// exiting with an UNRETIRED MFC queue (mfc_size > 0) drops its task-completion
+	// writeback - the game's main thread waits on that completion forever (the
+	// producer_silent circular deadlock). Caught at the exact moment it's dropped.
+	extern void ps5_fault(const char*, const std::string&);
+	if (mfc_size != 0)
+	{
+		ps5_fault("dropped_completion_on_exit", fmt::format("kernel %s pc 0x%x exits with mfc_size %u pending - a completion writeback dropped", get_name(), pc, mfc_size));
+	}
+
 	if (get_type() >= spu_type::raw)
 	{
 		if (status_npc.fetch_op([this](status_npc_sync_var& state)
