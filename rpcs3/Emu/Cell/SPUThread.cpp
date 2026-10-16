@@ -63,6 +63,11 @@ atomic_t<u64> g_ps5_mfc_claims[64][2]{};
 // cost (the dominant per-claim term - the stop-the-world PPU ack).
 atomic_t<u64> g_ps5_putllc_ok{};
 atomic_t<u64> g_ps5_putllc_fail{};
+// lab: the batch-line (0x5ad02e00) done-post outcome split - the freeze discriminator.
+// ok / fail-on-moved-stamp (real contention) / fail-on-unchanged-stamp (the damning bug).
+atomic_t<u64> g_ps5_batch_ok{};
+atomic_t<u64> g_ps5_batch_fail_cont{};
+atomic_t<u64> g_ps5_batch_fail_spu{};
 atomic_t<u64> g_ps5_writerlock_us{}; // total us spent in vm::writer_lock (vm.cpp)
 atomic_t<u64> g_ps5_writerlock_n{};  // ...across this many claims
 #endif
@@ -3560,7 +3565,7 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 	// Store conditionally
 	const u32 addr = args.eal & -128;
 
-	if ([&]()
+	const bool putllc_ok = [&]()
 	{
 		perf_meter<"PUTLLC."_u64> perf2 = perf0;
 
@@ -3678,7 +3683,18 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 
 		res += success ? 64 : 0 - 64;
 		return success;
-	}())
+	}();
+
+	// lab: the batch-line done-post outcome - the freeze discriminator. A failed done-post on a
+	// MOVED line-stamp = real contention (the storm); on an UNCHANGED stamp = the damning bug.
+	if ((addr - 0x5ad02e00u) < 0x300u)
+	{
+		if (putllc_ok) g_ps5_batch_ok.raw()++;
+		else if (((+vm::reservation_acquire(addr)) & -128) != (rtime & -128)) g_ps5_batch_fail_cont.raw()++;
+		else g_ps5_batch_fail_spu.raw()++;
+	}
+
+	if (putllc_ok)
 	{
 		if (raddr)
 		{

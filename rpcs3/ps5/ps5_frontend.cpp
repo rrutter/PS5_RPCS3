@@ -102,6 +102,9 @@ extern atomic_t<u64> g_ps5_putllc_fail;    // SPUThread.cpp: PUTLLC claim failur
 extern atomic_t<u64> g_ps5_writerlock_us;  // vm.cpp: total us in the writer_lock stop-the-world
 extern atomic_t<u64> g_ps5_writerlock_n;   // vm.cpp: ...across this many claims
 extern atomic_t<u64> g_ps5_lost_wake_heal; // atomic.cpp: lost condvar notifies self-healed by the bounded wait
+extern atomic_t<u64> g_ps5_batch_ok;        // SPUThread.cpp: batch-line done-post successes
+extern atomic_t<u64> g_ps5_batch_fail_cont; // ...failed on a moved stamp (real contention)
+extern atomic_t<u64> g_ps5_batch_fail_spu;  // ...failed on an UNCHANGED stamp (the damning atomicity bug)
 extern atomic_t<u64> g_ps5_frames_generated; // VKFrameGen.cpp: frames made between the game's
 extern atomic_t<int> g_ps5_rsx_core; // VKPresent.cpp: the core the RSX thread is running on (rsx_op_guard)
 
@@ -963,7 +966,7 @@ void ps5_thread_census(u64 now, u64 gap_start)
 	// the claim's success/failure split + the writer_lock safepoint's avg cost (the
 	// root-fix premises, measured): pure livelock = 0 ok, and whether the safepoint dominates
 	const u64 wn = g_ps5_writerlock_n.load();
-	std::string detail = fmt::format("rsx_op %u core %d main 0x%x spu_run %d claim %llu/s pend_mfc %d | claimok %llu fail %llu | writerlock %lluus/claim | heal %llu main_sig %u", rsx_op, g_ps5_rsx_core.load(), main_pc, spu_run, claim_rate, spu_pending_mfc, g_ps5_putllc_ok.load(), g_ps5_putllc_fail.load(), wn ? g_ps5_writerlock_us.load() / wn : 0, g_ps5_lost_wake_heal.load(), main_sig);
+	std::string detail = fmt::format("rsx_op %u core %d main 0x%x spu_run %d claim %llu/s pend_mfc %d | claimok %llu fail %llu | writerlock %lluus/claim | heal %llu main_sig %u | batch ok %llu cont %llu spu %llu", rsx_op, g_ps5_rsx_core.load(), main_pc, spu_run, claim_rate, spu_pending_mfc, g_ps5_putllc_ok.load(), g_ps5_putllc_fail.load(), wn ? g_ps5_writerlock_us.load() / wn : 0, g_ps5_lost_wake_heal.load(), main_sig, g_ps5_batch_ok.load(), g_ps5_batch_fail_cont.load(), g_ps5_batch_fail_spu.load());
 	// lab: the batch's accounting lines at the frozen moment (the claim/done line
 	// 0x5ad02e00 + the wait line 0x5ad02f80) - read the diverged counters in the act
 	if (vm::check_addr(0x5ad02e00, vm::page_readable, 64) && vm::check_addr(0x5ad02f80, vm::page_readable, 64))
