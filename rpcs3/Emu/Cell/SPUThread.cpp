@@ -6424,6 +6424,12 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 					}
 
 					spu_log.warning("sys_spu_thread_throw_event(spup=%d, data0=0x%x, data1=0x%x) failed (error=%s)", spup, (value & 0x00ffffff), data, res);
+
+					// lab: catch the swallowed completion in the fault pointer (own file - survives
+					// the silenced ring). A kernel's task-completion signal dropped (ENOTCONN/EBUSY)
+					// while it believes it signaled. The lost-completion freeze's smoking gun, in the act.
+					extern void ps5_fault(const char*, const std::string&);
+					ps5_fault("completion_signal_dropped", fmt::format("kernel %s spup %u - a completion signal was dropped and it believes it signaled", get_name(), spup));
 				}
 
 				return true;
