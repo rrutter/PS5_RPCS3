@@ -97,6 +97,10 @@ extern atomic_t<u64> g_ps5_getllar_waits[64][2]; // SPUThread.cpp: each SPU slot
 extern atomic_t<u32> g_ps5_rsx_op; // VKPresent.cpp: the RSX thread's current op (the monster trap)
 
 extern atomic_t<u64> g_ps5_mfc_claims[64][2]; // SPUThread.cpp: GETLLAR vs PUTLLC issue counts (lab claim-probe)
+extern atomic_t<u64> g_ps5_putllc_ok;      // SPUThread.cpp: PUTLLC claim successes (the cancer's nature)
+extern atomic_t<u64> g_ps5_putllc_fail;    // SPUThread.cpp: PUTLLC claim failures
+extern atomic_t<u64> g_ps5_writerlock_us;  // vm.cpp: total us in the writer_lock stop-the-world
+extern atomic_t<u64> g_ps5_writerlock_n;   // vm.cpp: ...across this many claims
 extern atomic_t<u64> g_ps5_frames_generated; // VKFrameGen.cpp: frames made between the game's
 extern atomic_t<int> g_ps5_rsx_core; // VKPresent.cpp: the core the RSX thread is running on (rsx_op_guard)
 
@@ -943,7 +947,10 @@ void ps5_thread_census(u64 now, u64 gap_start)
 	// lab: the species classifier - point the finger, don't spelunk. Order matters
 	// (most specific first). The codes are the hunt's shared vocabulary.
 	const u32 rsx_op = g_ps5_rsx_op.load();
-	std::string detail = fmt::format("rsx_op %u core %d main 0x%x spu_run %d claim %llu/s pend_mfc %d", rsx_op, g_ps5_rsx_core.load(), main_pc, spu_run, claim_rate, spu_pending_mfc);
+	// the claim's success/failure split + the writer_lock safepoint's avg cost (the
+	// root-fix premises, measured): pure livelock = 0 ok, and whether the safepoint dominates
+	const u64 wn = g_ps5_writerlock_n.load();
+	std::string detail = fmt::format("rsx_op %u core %d main 0x%x spu_run %d claim %llu/s pend_mfc %d | claimok %llu fail %llu | writerlock %lluus/claim", rsx_op, g_ps5_rsx_core.load(), main_pc, spu_run, claim_rate, spu_pending_mfc, g_ps5_putllc_ok.load(), g_ps5_putllc_fail.load(), wn ? g_ps5_writerlock_us.load() / wn : 0);
 	if (main_pc == 0xb3a4c8)
 		ps5_fault("gpuhang_watchdog", detail); // the game's own gpu-hang trap
 	else if (spu_run >= 3 && claim_rate > 20000)

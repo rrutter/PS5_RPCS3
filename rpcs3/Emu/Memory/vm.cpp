@@ -24,6 +24,12 @@ LOG_CHANNEL(vm_log, "VM");
 void ppu_remove_hle_instructions(u32 addr, u32 size);
 extern bool is_memory_compatible_for_copy_from_executable_optimization(u32 addr, u32 size);
 
+#ifdef __PROSPERO__
+// lab: the writer_lock safepoint cost counters (defined in SPUThread.cpp) - global scope
+extern atomic_t<u64> g_ps5_writerlock_us;
+extern atomic_t<u64> g_ps5_writerlock_n;
+#endif
+
 namespace vm
 {
 	static u8* memory_reserve_4GiB(void* _addr, u64 size = 0x100000000, bool is_memory_mapping = false)
@@ -455,9 +461,26 @@ namespace vm
 	{
 	}
 
+#ifdef __PROSPERO__
+	// lab: the writer_lock safepoint timer (the contention collapse's dominant
+	// per-claim cost - the stop-the-world PPU ack). Accumulates duration + count
+	// so we know if Option A (scope the safepoint) is the real target. Gated on
+	// /app0/fs-slowlog.txt (the lab's measure flag); inert otherwise. (externs at
+	// global scope, above namespace vm.)
+	struct wl_timer {
+		std::chrono::steady_clock::time_point t0;
+		bool on;
+		wl_timer() : on(fs::is_file("/app0/fs-slowlog.txt")) { if (on) t0 = std::chrono::steady_clock::now(); }
+		~wl_timer() { if (on) { const auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count(); ::g_ps5_writerlock_us.raw() += us; ::g_ps5_writerlock_n.raw()++; } }
+	};
+#endif
+
 	writer_lock::writer_lock(u32 const addr, atomic_t<u64, 128>* range_lock, u32 const size, u64 const flags) noexcept
 		: range_lock(range_lock)
 	{
+#ifdef __PROSPERO__
+		wl_timer _wl_t; // lab: time the safepoint acquisition (the stop-the-world cost)
+#endif
 		if (cpu_thread* cpu = cpu_thread::get_current(); cpu && cpu->get_class() == thread_class::ppu)
 		{
 			// cpu_flag::wait must be added by the caller

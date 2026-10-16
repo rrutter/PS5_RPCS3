@@ -58,6 +58,13 @@ atomic_t<u64> g_ps5_getllar_waits[64][2]{};
 // with pu flat at 0 = the pre-claim check always says not-ready (read side);
 // pu firing but never completing = the claim contention side.
 atomic_t<u64> g_ps5_mfc_claims[64][2]{};
+// lab: the claim's success/failure split (the cancer's nature: a PURE livelock
+// = 0 successes, vs slow progress = some land). And the writer_lock safepoint's
+// cost (the dominant per-claim term - the stop-the-world PPU ack).
+atomic_t<u64> g_ps5_putllc_ok{};
+atomic_t<u64> g_ps5_putllc_fail{};
+atomic_t<u64> g_ps5_writerlock_us{}; // total us spent in vm::writer_lock (vm.cpp)
+atomic_t<u64> g_ps5_writerlock_n{};  // ...across this many claims
 #endif
 
 // LUTs for SPU instructions
@@ -5000,6 +5007,7 @@ bool spu_thread::process_mfc_cmd()
 		else
 		{
 			ch_atomic_stat.set_value(MFC_PUTLLC_FAILURE);
+			g_ps5_putllc_fail.raw()++; // lab: the claim's failure side (the cancer's nature probe)
 
 			// lab: the PUTLLC failure-streak instrument (flag /app0/rpcs3-putllc-storm.txt).
 			// Illuminates the contention collapse's failure cadence - how many consecutive
