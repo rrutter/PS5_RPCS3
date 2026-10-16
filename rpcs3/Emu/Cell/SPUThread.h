@@ -862,6 +862,13 @@ public:
 	// future backoff fix is tuned on data, not vibes. Instrument only, no behavior change.
 	u32 putllc_fail_addr = 0;   // the reservation line the current failure streak is on
 	u32 putllc_fail_count = 0;  // consecutive PUTLLC failures on that line
+
+	// lab: the GETLLAR re-read storm tracker. The contention collapse's ENGINE is the
+	// re-read spin (gl 391k/s >> pu 28k/s - the kernels re-read the hot line, not fail
+	// claims). Unlike the stock spin counter, this does NOT reset on a line change (the
+	// storm's churn is exactly what the stock one resets on). Instrument only.
+	u32 getllar_storm_addr = 0;  // the hot line being re-read
+	u32 getllar_storm_count = 0; // consecutive re-reads of it
  
 	void push_snr(u32 number, u32 value);
 	static void do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8* ls);

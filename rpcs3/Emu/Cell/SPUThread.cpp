@@ -4433,6 +4433,27 @@ bool spu_thread::process_mfc_cmd()
 		const u32 addr = ch_mfc_cmd.eal & -128;
 		spu_mega_log(*this, "getllar", addr, 0, 0); // lab
 		g_ps5_mfc_claims[lv2_id % 64][0].raw()++; // lab: claim-probe
+
+		// lab: the GETLLAR re-read storm throttle (the contention backoff, flag
+		// rpcs3-putllc-backoff.txt). The storm's ENGINE is the re-read spin: a kernel
+		// GETLLARs a hot line, sees a rival's commit, re-reads instantly, forever - the
+		// tape proved the storm is GETLLAR-dominated (gl 391k/s >> pu 28k/s). Track
+		// consecutive same-line re-reads (NOT reset on churn, unlike the stock spin
+		// counter); past a threshold, a progressive hardware PAUSE thins the re-read
+		// rate while keeping the thread HOT (no sleep, no lost wake).
+		static const bool getllar_backoff_on = fs::is_file("/app0/rpcs3-putllc-backoff.txt");
+		if (getllar_backoff_on)
+		{
+			if (addr == getllar_storm_addr) getllar_storm_count++; else { getllar_storm_addr = addr; getllar_storm_count = 1; }
+			if (getllar_storm_count >= 8)
+			{
+				const u32 shift = std::min(getllar_storm_count - 8, 8u);
+				const u32 spins = 16u << shift; // 16 .. ~4096 pause iterations, growing with the streak
+				for (u32 i = 0; i < spins; i++)
+					utils::pause(); // x86 PAUSE - thin the collision rate, stay hot
+			}
+		}
+
 		const auto& data = vm::_ref<spu_rdata_t>(addr);
 
 		if (addr == last_faddr)
@@ -4926,6 +4947,7 @@ bool spu_thread::process_mfc_cmd()
 		{
 			ch_atomic_stat.set_value(MFC_PUTLLC_SUCCESS);
 			putllc_fail_count = 0; // lab: a landed claim resets the storm streak
+			getllar_storm_count = 0; // lab: ...and the re-read storm's streak
 
 			if (is_spurs_task_wait)
 			{
