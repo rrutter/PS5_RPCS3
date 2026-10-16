@@ -1766,6 +1766,31 @@ int run(const char* boot_path)
 								}
 							}
 
+							// lab: the ghost-counter tripwire (gated on spurs-dump.txt, LAB-ONLY - the
+							// bow stays naive). A workload 'ready but not startable' (rc>0, ct>=max, no
+							// idle) that PERSISTS = the phantom contention: a kernel killed mid-claim
+							// never decremented its contribution, so the counter is corrupt and nothing
+							// new can start. Points at the ghost without the weeds. (contention-collapse lane)
+							{
+								static const bool ghost_armed = fs::is_file("/app0/spurs-dump.txt");
+								if (ghost_armed)
+								{
+									for (u32 w = 0; w < 16; w++)
+									{
+										if (static_cast<u32>(+sp->wklState1[w]) != 2) continue; // RUNNABLE
+										const u32 rc = +sp->wklReadyCount1[w] + +sp->wklIdleSpuCountOrReadyCount2[w];
+										const u32 ct = +sp->wklCurrentContention[w], mx = +sp->wklMaxContention[w];
+										if (rc > 0 && mx > 0 && ct >= mx) // ready but not startable
+										{
+											static u32 s_ghost_w = umax; static int s_ghost_pulses = 0;
+											if (s_ghost_w == w) s_ghost_pulses++; else { s_ghost_w = w; s_ghost_pulses = 1; }
+											if (s_ghost_pulses == 2)
+												ps5_fault("spurs_ghost_contention", fmt::format("w%u ready %u ct %u>=%u idle %u - a phantom owner never decremented", w, rc, ct, mx, +sp->spuIdling));
+										}
+									}
+								}
+							}
+
 							// lab: the re-kick watchdog (the captain's timed delay at the station).
 							// Work runnable + picture frozen = the first kick was missed; re-ring the
 							// reservation bell until a parked kernel answers. Lost-wakeup cover.

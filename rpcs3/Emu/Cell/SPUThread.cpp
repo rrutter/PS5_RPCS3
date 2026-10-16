@@ -4925,6 +4925,7 @@ bool spu_thread::process_mfc_cmd()
 		if (do_putllc(ch_mfc_cmd))
 		{
 			ch_atomic_stat.set_value(MFC_PUTLLC_SUCCESS);
+			putllc_fail_count = 0; // lab: a landed claim resets the storm streak
 
 			if (is_spurs_task_wait)
 			{
@@ -4977,6 +4978,20 @@ bool spu_thread::process_mfc_cmd()
 		else
 		{
 			ch_atomic_stat.set_value(MFC_PUTLLC_FAILURE);
+
+			// lab: the PUTLLC failure-streak instrument (flag /app0/rpcs3-putllc-storm.txt).
+			// Illuminates the contention collapse's failure cadence - how many consecutive
+			// claim failures a kernel eats before one lands - so the future backoff fix is
+			// tuned on data, not vibes. Passive: a counter + a rare gated log. Zero cost
+			// unarmed (the bow never carries the flag).
+			static const bool storm_log = fs::is_file("/app0/rpcs3-putllc-storm.txt");
+			if (storm_log)
+			{
+				const u32 line = ch_mfc_cmd.eal & ~127u;
+				if (line == putllc_fail_addr) putllc_fail_count++; else { putllc_fail_addr = line; putllc_fail_count = 1; }
+				if (putllc_fail_count >= 16 && (putllc_fail_count & (putllc_fail_count - 1)) == 0) // each power-of-two past 16
+					spu_log.notice("lab putllc-storm: %s line 0x%x, %u consecutive claim failures (pc 0x%x)", get_name(), putllc_fail_addr, putllc_fail_count, pc);
+			}
 		}
 
 		if (dump)

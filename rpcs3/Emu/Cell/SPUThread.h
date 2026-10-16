@@ -856,6 +856,12 @@ public:
 
 	std::array<std::array<u8, 4>, SPU_LS_SIZE / 128> getllar_wait_time{};
 	std::array<std::array<u8, 16>, SPU_LS_SIZE / 128> eventstat_wait_time{};
+
+	// lab: the PUTLLC failure-streak tracker - illuminates the contention collapse's
+	// failure cadence (how many consecutive claim failures before a success) so the
+	// future backoff fix is tuned on data, not vibes. Instrument only, no behavior change.
+	u32 putllc_fail_addr = 0;   // the reservation line the current failure streak is on
+	u32 putllc_fail_count = 0;  // consecutive PUTLLC failures on that line
  
 	void push_snr(u32 number, u32 value);
 	static void do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8* ls);
