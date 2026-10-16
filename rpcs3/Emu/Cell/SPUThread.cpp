@@ -6377,6 +6377,13 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 					queue = this->spup[spup];
 				}
 
+				// lab: the misroute trap (symmetric to throw_event) - log WHICH queue this
+				// acknowledged completion targets + its liveness, to catch the dead-letter
+				// (a live send into a stale queue generation). Gated on spurs-signal-trace.txt.
+				static const bool sig_trace2 = fs::is_file("/app0/spurs-signal-trace.txt");
+				if (sig_trace2)
+					spu_log.notice("lab signal-target: %s spup %u -> queue id 0x%x alive %d", get_name(), spup, queue ? +queue->id : 0, (queue && queue->exists) ? 1 : 0);
+
 				const auto res = !queue ? CELL_ENOTCONN :
 					queue->send(SYS_SPU_THREAD_EVENT_USER_KEY, lv2_id, (u64{spup} << 32) | (value & 0x00ffffff), data);
 
@@ -6427,6 +6434,14 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 					std::lock_guard lock{group->mutex};
 					queue = this->spup[spup];
 				}
+
+				// lab: the misroute trap - log WHICH queue each completion signal targets (and
+				// whether it's alive), to catch the dead-letter: a send that SUCCEEDS into a
+				// stale/abandoned queue generation (no error to catch - it just lands where
+				// nobody reads). Gated on spurs-signal-trace.txt.
+				static const bool sig_trace = fs::is_file("/app0/spurs-signal-trace.txt");
+				if (sig_trace)
+					spu_log.notice("lab signal-target: %s spup %u -> queue id 0x%x alive %d", get_name(), spup, queue ? +queue->id : 0, (queue && queue->exists) ? 1 : 0);
 
 				// TODO: check passing spup value
 				if (auto res = queue ? queue->send(SYS_SPU_THREAD_EVENT_USER_KEY, lv2_id, (u64{spup} << 32) | (value & 0x00ffffff), data) : CELL_ENOTCONN)

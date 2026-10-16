@@ -962,6 +962,10 @@ void ps5_thread_census(u64 now, u64 gap_start)
 	// root-fix premises, measured): pure livelock = 0 ok, and whether the safepoint dominates
 	const u64 wn = g_ps5_writerlock_n.load();
 	std::string detail = fmt::format("rsx_op %u core %d main 0x%x spu_run %d claim %llu/s pend_mfc %d | claimok %llu fail %llu | writerlock %lluus/claim", rsx_op, g_ps5_rsx_core.load(), main_pc, spu_run, claim_rate, spu_pending_mfc, g_ps5_putllc_ok.load(), g_ps5_putllc_fail.load(), wn ? g_ps5_writerlock_us.load() / wn : 0);
+	// lab: the batch's accounting lines at the frozen moment (the claim/done line
+	// 0x5ad02e00 + the wait line 0x5ad02f80) - read the diverged counters in the act
+	if (vm::check_addr(0x5ad02e00, vm::page_readable, 64) && vm::check_addr(0x5ad02f80, vm::page_readable, 64))
+		fmt::append(detail, " | batch: claim[0] %08x %08x done[0] %08x %08x | wait[73] %02x", +vm::read32(0x5ad02e00), +vm::read32(0x5ad02e04), +vm::read32(0x5ad02e10), +vm::read32(0x5ad02e14), +vm::_ref<u8>(0x5ad02f80 + 0x73));
 	if (main_pc == 0xb3a4c8)
 		ps5_fault("gpuhang_watchdog", detail); // the game's own gpu-hang trap
 	else if (spu_run >= 3 && claim_rate > 20000)
