@@ -3764,8 +3764,18 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 			if (streak >= 6)
 			{
 				g_ps5_backoff_parks.raw()++;
-				const u32 us = std::min(40u << std::min(streak - 6, 5u), 2000u); // 40us -> 2ms cap
-				std::this_thread::sleep_for(std::chrono::microseconds(us));
+				// the CORRECTED contention-livelock cure (swarm r2 design, not the flawed raw sleep):
+				// block the loser on the reservation notifier - wait for the line to CHANGE (a rival's
+				// commit) instead of instantly re-arming on SPU_EVENT_LR. Converts the 5-way lockstep
+				// into a queue: losers leave the line, the winner's done-post lands, the commit wakes
+				// them. Escalating cap. The raw sleep didn't coordinate with the line (and cost the
+				// slideshow); this waits on the winner's progress + sleeps efficiently (no busy burn).
+				const u64 ns = static_cast<u64>(std::min(50u << std::min(streak - 6, 5u), 2000u)) * 1000; // 50us -> 2ms cap
+				if (auto [wait_var, flag_val] = vm::reservation_notifier_begin_wait(addr, +vm::reservation_acquire(addr)); wait_var)
+				{
+					utils::bless<atomic_t<u32>>(&wait_var->raw().wait_flag)->wait(flag_val, atomic_wait_timeout{ns});
+					vm::reservation_notifier_end_wait(*wait_var);
+				}
 			}
 		}
 
