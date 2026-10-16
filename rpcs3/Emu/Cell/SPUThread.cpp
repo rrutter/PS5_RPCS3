@@ -6365,6 +6365,10 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 						// TODO: Check this
 						spu_log.error("sys_spu_thread_send_event(spup=%d, data0=0x%x, data1=0x%x): In_MBox is not empty (%d)", spup, (value & 0x00ffffff), data, ch_in_mbox.get_count());
 						ch_in_mbox.set_values(1, CELL_EBUSY);
+						// lab: the rat trap - the completion event vaporized because the kernel's
+						// in-mbox was occupied (a prior unreplied send). The drop, caught in the act.
+						extern void ps5_fault(const char*, const std::string&);
+						ps5_fault("completion_signal_dropped", fmt::format("kernel %s spup %u - send_event aborted: in-mbox occupied", get_name(), spup));
 						return true;
 					}
 
@@ -6387,6 +6391,16 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 					ch_out_mbox.set_value(data);
 					ch_in_mbox.try_pop(data);
 					return false;
+				}
+
+				// lab: the rat trap - the ACKNOWLEDGED completion signal (send_event) failed
+				// on the send side (ENOTCONN/EBUSY - a dead/torn-down queue in the trigger
+				// window). The kernel gets the error but libspurs can't recover; main waits
+				// forever on the completion. Symmetric to the throw_event swallow.
+				if (+res != CELL_OK)
+				{
+					extern void ps5_fault(const char*, const std::string&);
+					ps5_fault("completion_signal_dropped", fmt::format("kernel %s spup %u - send_event failed", get_name(), spup));
 				}
 
 				atomic_storage<u32>::release(ch_in_mbox.values.raw().value0, res);
