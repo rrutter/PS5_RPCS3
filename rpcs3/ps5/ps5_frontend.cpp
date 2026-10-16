@@ -932,8 +932,19 @@ void ps5_thread_census(u64 now, u64 gap_start)
 		const auto& c = spu.ch_mfc_cmd; // a stuck DMA names the lost completion
 		if (+c.cmd)
 		{
-			fmt::append(out, "       pending MFC cmd 0x%x tag %u size %u eal 0x%x | tm 0x%x\n", +c.cmd, c.tag, c.size, c.eal, +spu.ch_tag_mask);
+			fmt::append(out, "       pending MFC cmd 0x%x tag %u size 128 eal 0x%x | tm 0x%x\n", +c.cmd, c.tag, c.size, c.eal, +spu.ch_tag_mask);
 			if (+spu.ch_tag_mask) spu_pending_mfc++; // waiting on a tag
+
+			// lab: the lost-wake pointer - a GETLLAR stuck pending (ts 0) names its gremlin.
+			// If the line's stamp MOVED past the kernel's rtime, a change happened but the wake
+			// was LOST (the notifier dropped it). If UNCHANGED, the producer never wrote to the
+			// line (the circular deadlock / producer-silent disease). The two want different fixes.
+			if (+c.cmd == 0xd0 && spu.raddr)
+			{
+				const u64 cur = vm::reservation_acquire(spu.raddr);
+				const bool wake_lost = (cur & -128) != (spu.rtime & -128); // the line's time moved past the kernel's reservation
+				ps5_fault(wake_lost ? "lost_wake_confirmed" : "producer_silent", fmt::format("kernel %s line 0x%x rtime %llu cur %llu", spu.get_name(), spu.raddr, +spu.rtime, cur));
+			}
 		}
 	});
 
