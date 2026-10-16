@@ -110,6 +110,7 @@ extern "C" {
 }
 
 void ps5_thread_census(u64 now, u64 gap_start); // the thread census (below) - the conviction instrument
+void ps5_fault(const char* code, const std::string& detail); // the fault pointer (below) - the JSON species marker
 
 // lab: the SPURS-kernel block trail + mega ring (defined in SPUThread.cpp)
 extern std::atomic<u32> g_spu_trail_idx[];
@@ -857,6 +858,8 @@ void ps5_dump_trap(ppu_thread& ppu, u64 addr)
 		std::fclose(f);
 	}
 	trace("lab: trap state written to /app0/rpcs3-trap-dump.txt");
+	// lab: the fault pointer - the trap names itself (0xb3a4c8 = the game's gpuhang watchdog)
+	ps5_fault(ppu.cia == 0xb3a4c8 ? "gpuhang_watchdog" : "ppu_trap", fmt::format("pc 0x%x in %s", ppu.cia, ppu.get_name()));
 }
 
 // lab: the thread census - the conviction instrument (the thread-swarm's design).
@@ -864,6 +867,21 @@ void ps5_dump_trap(ppu_thread& ppu, u64 addr)
 // affinity mask, running-vs-parked, and where its pc sits - plus the GPU's
 // completed-seq. This separates a CPU-scheduling crime (a starved/migrating
 // producer) from a GPU-execution crime (work submitted, the marker frozen).
+// lab: the fault pointer. One compact JSON line per detected stall species, to
+// /app0/rpcs3-faults.jsonl - so a fault names itself (and points the direction to
+// dig) instead of us spelunking a 100MB trace per incident. Fail fast, point true.
+void ps5_fault(const char* code, const std::string& detail)
+{
+	const u64 t = get_system_time() / 1000;
+	const std::string line = fmt::format("{\"t\":%llu,\"fault\":\"%s\",\"detail\":\"%s\"}\n", t, code, detail);
+	if (FILE* f = std::fopen("/app0/rpcs3-faults.jsonl", "a"))
+	{
+		std::fwrite(line.data(), 1, line.size(), f);
+		std::fclose(f);
+	}
+	trace("lab FAULT: %s | %s", code, detail); // the live breadcrumb too
+}
+
 void ps5_thread_census(u64 now, u64 gap_start)
 {
 	if (!Emu.IsRunning()) return; // the build-88 race: idm can reset under us
@@ -889,25 +907,64 @@ void ps5_thread_census(u64 now, u64 gap_start)
 	// data). Priority/affinity are uniform today (all 700 FIFO, full mask, bar the
 	// 600 caste) - the boot census captures the mask; per-thread masks get added
 	// the day we actually pin threads.
+	// collect the species-tells for the fault classifier while we list the threads
+	u32 main_pc = 0;
+	int spu_run = 0, spu_claimpc = 0, spu_pending_mfc = 0;
 	const auto census = [&](const char* kind, auto& thr, u32 pc)
 	{
 		fmt::append(out, "  %s %-26s %s pc 0x%x\n", kind, thr.get_name(), is_running(thr) ? "RUN " : "park", pc);
 	};
-	idm::select<named_thread<ppu_thread>>([&](u32, ppu_thread& ppu) { census("PPU", ppu, ppu.cia); });
+	idm::select<named_thread<ppu_thread>>([&](u32, ppu_thread& ppu)
+	{
+		census("PPU", ppu, ppu.cia);
+		if (ppu.id == 0x1000000) main_pc = ppu.cia;
+	});
 	idm::select<named_thread<spu_thread>>([&](u32, spu_thread& spu)
 	{
 		census("SPU", spu, spu.pc);
+		const bool run = is_running(spu);
+		if (run) spu_run++;
+		if (run && spu.pc >= 0x400 && spu.pc <= 0x1dfff) spu_claimpc++; // churning in task/claim code
 		const auto& c = spu.ch_mfc_cmd; // a stuck DMA names the lost completion
 		if (+c.cmd)
+		{
 			fmt::append(out, "       pending MFC cmd 0x%x tag %u size %u eal 0x%x | tm 0x%x\n", +c.cmd, c.tag, c.size, c.eal, +spu.ch_tag_mask);
+			if (+spu.ch_tag_mask) spu_pending_mfc++; // waiting on a tag
+		}
 	});
+
+	// the claim rate (GETLLAR+PUTLLC per second over the last census interval)
+	u64 claim_now = 0;
+	for (u32 i = 0; i < 64; i++) claim_now += g_ps5_mfc_claims[i][0].load() + g_ps5_mfc_claims[i][1].load();
+	static u64 s_last_claim = 0, s_last_t = 0;
+	const u64 claim_rate = (s_last_t && now > s_last_t) ? (claim_now - s_last_claim) * 1000000ull / (now - s_last_t) : 0;
+	s_last_claim = claim_now; s_last_t = now;
+
+	// lab: the species classifier - point the finger, don't spelunk. Order matters
+	// (most specific first). The codes are the hunt's shared vocabulary.
+	const u32 rsx_op = g_ps5_rsx_op.load();
+	std::string detail = fmt::format("rsx_op %u core %d main 0x%x spu_run %d claim %llu/s pend_mfc %d", rsx_op, g_ps5_rsx_core.load(), main_pc, spu_run, claim_rate, spu_pending_mfc);
+	if (main_pc == 0xb3a4c8)
+		ps5_fault("gpuhang_watchdog", detail); // the game's own gpu-hang trap
+	else if (spu_run >= 3 && claim_rate > 20000)
+		ps5_fault("spurs_claim_storm", detail); // the contention livelock (degradation)
+	else if (spu_pending_mfc && spu_run == 0)
+		ps5_fault("lost_dma_completion", detail); // a kernel's DMA tag never lands (the freeze)
+	else if (main_pc == 0xb6fe14 && spu_run == 0)
+		ps5_fault("spurs_lost_wake", detail); // main waits on an event, kernels parked idle
+	else if (rsx_op == 3)
+		ps5_fault("rsx_semaphore_wait", detail); // RSX spinning on a guest semaphore
+	else if ((rsx_op == 2 || rsx_op == 5))
+		ps5_fault("gpu_stall", detail); // RSX blocked in present/fence, gpu not completing
+	else if (rsx_op == 1)
+		ps5_fault("producer_stall", detail); // RSX idle GET==PUT: the game didn't feed it
 
 	if (FILE* f = std::fopen("/app0/rpcs3-threadcensus.txt", "a"))
 	{
 		std::fwrite(out.data(), 1, out.size(), f);
 		std::fclose(f);
 	}
-	trace("census: gap %llu ms, rsx_op %u core %d (rpcs3-threadcensus.txt)", gap_ms, g_ps5_rsx_op.load(), g_ps5_rsx_core.load());
+	trace("census: gap %llu ms, rsx_op %u core %d (rpcs3-threadcensus.txt)", gap_ms, rsx_op, g_ps5_rsx_core.load());
 }
 // What the Qt frontend defines for the emulator, without Qt
 
@@ -1435,6 +1492,7 @@ int run(const char* boot_path)
 										fmt::append(ks, " [%s pc 0x%x raddr 0x%x]", t->get_name(), t->pc, +t->raddr);
 								trace("lab: SPURS-TEARDOWN WEDGE - group 0x%x (%s) running %u stuck; a kernel won't die:%s << the doorbell fix didn't hold; look at the LR/reservation wake",
 									g.id, g.name, run, ks);
+								ps5_fault("spurs_teardown_wedge", fmt::format("group 0x%x %s running %u%s", g.id, g.name, run, ks));
 							}
 						});
 						for (auto it = s_wedges.begin(); it != s_wedges.end();)
