@@ -991,6 +991,19 @@ void ps5_thread_census(u64 now, u64 gap_start)
 	else if (rsx_op == 1)
 		ps5_fault("producer_stall", detail); // RSX idle GET==PUT: the game didn't feed it
 
+	// lab: dump the SPURS batch's claim/done line (0x5ad02e00) + wait line (0x5ad02f80) RAW,
+	// 128 bytes each - the done-accounting caught in the act with NO guessed offsets. The
+	// freeze = a job's done-post never lands -> the outstanding-count never hits target -> no
+	// last-finisher fires the completion (main_sig 0). Read the raw accounting state here.
+	if (vm::check_addr(0x5ad02e00, vm::page_readable, 128) && vm::check_addr(0x5ad02f80, vm::page_readable, 128))
+	{
+		fmt::append(out, "       batch claim line 0x5ad02e00:");
+		for (u32 o = 0; o < 128; o += 4) fmt::append(out, " %08x", +vm::read32(0x5ad02e00 + o));
+		fmt::append(out, "\n       batch wait  line 0x5ad02f80:");
+		for (u32 o = 0; o < 128; o += 4) fmt::append(out, " %08x", +vm::read32(0x5ad02f80 + o));
+		fmt::append(out, "\n");
+	}
+
 	if (FILE* f = std::fopen("/app0/rpcs3-threadcensus.txt", "a"))
 	{
 		std::fwrite(out.data(), 1, out.size(), f);

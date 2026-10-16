@@ -12,6 +12,8 @@ const bool utils::g_atomic_lse2 = utils::has_lse2();
 #define USE_STD
 #endif
 
+#include <cstdio>
+
 // PS5 hunt: counts lost std::condition_variable notifications self-healed by the bounded
 // wait below (the USE_STD infinite-wait hole). Read + reported by the census (ps5_frontend).
 atomic_t<u64> g_ps5_lost_wake_heal{};
@@ -1138,10 +1140,23 @@ atomic_wait_engine::wait(const void* data, u32 old_value, u64 timeout, atomic_wa
 			// so a lost wake self-heals into a sub-frame hiccup instead of a freeze. If we timed
 			// out yet the value already changed, a notify was lost and we just absorbed it -
 			// count it, which both proves the disease and confirms the cure is engaging.
-			if (cond->cv->wait_for(lock, std::chrono::microseconds(1000)) == std::cv_status::timeout
-				&& !ptr_cmp(data, old_value, ext))
+			// PS5 lab instrument ONLY (gated on /app0/rpcs3-selfheal.txt). The BOW stays on the
+			// stock infinite wait (naive) - the user found the self-heal cost perf and didn't fix
+			// the freeze, so it lives in the lab as a probe now. On the lab: bound the condvar wait
+			// so a genuinely-stuck notify self-heals + count it (50ms cap: cheap, catches a
+			// catastrophic lost-notify without the 1ms churn tax). On the bow: unchanged.
+			static const bool s_self_heal = []{ if (FILE* f = std::fopen("/app0/rpcs3-selfheal.txt", "r")) { std::fclose(f); return true; } return false; }();
+			if (s_self_heal)
 			{
-				g_ps5_lost_wake_heal.raw()++;
+				if (cond->cv->wait_for(lock, std::chrono::milliseconds(50)) == std::cv_status::timeout
+					&& !ptr_cmp(data, old_value, ext))
+				{
+					g_ps5_lost_wake_heal.raw()++;
+				}
+			}
+			else
+			{
+				cond->cv->wait(lock);
 			}
 		}
 #elif defined(_WIN32)
