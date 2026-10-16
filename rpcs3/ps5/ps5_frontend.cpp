@@ -106,6 +106,10 @@ extern atomic_t<u64> g_ps5_batch_ok;        // SPUThread.cpp: batch-line done-po
 extern atomic_t<u64> g_ps5_batch_fail_cont; // ...failed on a moved stamp (real contention)
 extern atomic_t<u64> g_ps5_batch_fail_spu;  // ...failed on an UNCHANGED stamp (the damning atomicity bug)
 extern atomic_t<u64> g_ps5_backoff_parks;   // SPUThread.cpp: the escalating PUTLLC-failure park engagements
+// the flight recorder (identical def to SPUThread.cpp - ODR-legal, token-identical)
+struct ps5_trail_t { u64 seq; u32 kernel; u32 pc; u32 addr; u32 kind; u64 rtime; };
+extern ps5_trail_t g_ps5_trail[32];         // SPUThread.cpp: the last-32-SPURS-ops ring
+extern atomic_t<u64> g_ps5_trail_seq;       // ...its write cursor
 extern atomic_t<u64> g_ps5_frames_generated; // VKFrameGen.cpp: frames made between the game's
 extern atomic_t<int> g_ps5_rsx_core; // VKPresent.cpp: the core the RSX thread is running on (rsx_op_guard)
 
@@ -1047,6 +1051,21 @@ void ps5_thread_census(u64 now, u64 gap_start)
 		fmt::append(out, "       spurs contention 0x5631a300:");
 		for (u32 o = 0; o < 160; o += 4) fmt::append(out, " %08x", +vm::read32(0x5631a300 + o));
 		fmt::append(out, "\n");
+	}
+	// lab: dump the flight recorder ring (the last 32 SPURS ops) in seq order, oldest->newest. The
+	// black box: the SEQUENCE of claims/dones/fires leading to the freeze - the op that never
+	// completed names the culprit (the user's LAST-ACTION idea). kind: putllc-ok/fail, SEND=the fire.
+	{
+		const u64 total = g_ps5_trail_seq.load();
+		const u64 start = total > 32 ? total - 32 : 0;
+		fmt::append(out, "       flight recorder (last %llu SPURS ops, oldest->newest):\n", total > 32 ? 32ull : total);
+		for (u64 s = start; s < total; s++)
+		{
+			const auto& e = g_ps5_trail[s & 31];
+			if (e.seq != s) continue; // a slot not written this wrap
+			fmt::append(out, "         #%llu K%u pc 0x%x %s 0x%x rtime %llu\n", e.seq, e.kernel, e.pc,
+				e.kind == 2 ? "SEND " : (e.kind == 1 ? "PUT-OK " : "PUT-FAIL"), e.addr, e.rtime);
+		}
 	}
 
 	if (FILE* f = std::fopen("/app0/rpcs3-threadcensus.txt", "a"))

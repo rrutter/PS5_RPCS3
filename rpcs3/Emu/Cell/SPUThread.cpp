@@ -69,6 +69,15 @@ atomic_t<u64> g_ps5_batch_ok{};
 atomic_t<u64> g_ps5_batch_fail_cont{};
 atomic_t<u64> g_ps5_batch_fail_spu{};
 atomic_t<u64> g_ps5_backoff_parks{}; // lab: how many times the escalating PUTLLC-failure park fired
+
+// lab: the SPURS FLIGHT RECORDER (the user's LAST-ACTION black box). A ring of the last 32 SPURS
+// operations (batch claim/done PUTLLCs + completion sends). Overwritten each op, so the ring's TAIL
+// at a freeze = the actions that did/didn't complete - the one that never completed names the culprit.
+// kind: 0=putllc-fail 1=putllc-ok 2=completion-send. The current instruments see the FROZEN state;
+// this sees the SEQUENCE that led to it.
+struct ps5_trail_t { u64 seq; u32 kernel; u32 pc; u32 addr; u32 kind; u64 rtime; };
+ps5_trail_t g_ps5_trail[32]{};
+atomic_t<u64> g_ps5_trail_seq{};
 atomic_t<u64> g_ps5_writerlock_us{}; // total us spent in vm::writer_lock (vm.cpp)
 atomic_t<u64> g_ps5_writerlock_n{};  // ...across this many claims
 #endif
@@ -3695,6 +3704,16 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 		else g_ps5_batch_fail_spu.raw()++;
 	}
 
+	// lab: the flight recorder - record every SPURS-line PUTLLC (the batch claim/done line
+	// 0x5ad02e00 + the SPURS instance 0x5631a300) into the ring. The tail at a freeze = the last
+	// actions; the one that never completed names the culprit. (the user's LAST-ACTION black box)
+	if (((addr - 0x5ad02e00u) < 0x300u) || ((addr - 0x5631a000u) < 0x1000u))
+	{
+		const u64 s = g_ps5_trail_seq.raw()++;
+		auto& e = g_ps5_trail[s & 31];
+		e.seq = s; e.kernel = index; e.pc = pc; e.addr = addr; e.kind = putllc_ok ? 1u : 0u; e.rtime = rtime;
+	}
+
 	if (putllc_ok)
 	{
 		if (raddr)
@@ -6443,6 +6462,15 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 
 				const auto res = !queue ? CELL_ENOTCONN :
 					queue->send(SYS_SPU_THREAD_EVENT_USER_KEY, lv2_id, (u64{spup} << 32) | (value & 0x00ffffff), data);
+
+				// lab: the flight recorder - the completion SEND (the batch's fire). kind=2. If the ring's
+				// tail at a freeze is all claims/dones with no fire after the last done -> the completion
+				// never came (the lost done-post starved the last-finisher).
+				{
+					const u64 s = g_ps5_trail_seq.raw()++;
+					auto& e = g_ps5_trail[s & 31];
+					e.seq = s; e.kernel = index; e.pc = pc; e.addr = spup; e.kind = 2u; e.rtime = static_cast<u64>(data);
+				}
 
 				if (res == CELL_ENOTCONN)
 				{
