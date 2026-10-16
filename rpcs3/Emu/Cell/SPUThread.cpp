@@ -3730,14 +3730,13 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 			// Last check for event before we clear the reservation
 			if (~ch_events.load().events & SPU_EVENT_LR)
 			{
-				if (raddr == addr)
-				{
-					set_events(SPU_EVENT_LR);
-				}
-				else
-				{
-					get_events(SPU_EVENT_LR);
-				}
+				// lab fix (the lost-completion freeze, swarm r4 Bug 1): a failed PUTLLC that
+				// discards the reservation must ALWAYS re-arm LR. The cross-line case (raddr !=
+				// addr) used to SAMPLE (get_events) instead of SET - stranding the kernel in the
+				// RdEventStat LR-wait with no reservation + no wake, so it never retries its
+				// done-post -> the batch never completes -> no completion -> main hangs forever.
+				// On real HW the ~0% PUTLLC failure rate never exercises this path; our storm does.
+				set_events(SPU_EVENT_LR);
 			}
 		}
 
@@ -6226,7 +6225,15 @@ s64 spu_thread::get_ch_value(u32 ch)
 						{
 							set_lr = true;
 						}
-						else if (!cmp_rdata(_this->rdata, *_this->resrv_mem))
+						// lab fix (swarm r4 Bug 2 - the PS5-vs-Linux divergence): also wake on a STAMP-only
+						// bump (the reservation stamp moved but the 128 bytes are identical - the silent-bump
+						// paths: the unchanged-writeback + the idle->running PUTLLC). The kernel's reservation
+						// is still LOST even though the data matches. The PS5 (non-Linux) LR-wait branch has
+						// no timeout escape (the callback overrides it) and this callback only re-checked the
+						// DATA - so a stamp-only bump stranded the waiter forever (the lost done-post freeze).
+						// The stamp re-check is the authoritative reservation test; Linux self-heals via the
+						// 50us timeout. rtime!=current = the reservation moved under us -> wake + re-GETLLAR.
+						else if (!cmp_rdata(_this->rdata, *_this->resrv_mem) || vm::reservation_acquire(raddr) != _this->rtime)
 						{
 							auto& wait_addrs = _this->raddr_busy_wait_addr;
 

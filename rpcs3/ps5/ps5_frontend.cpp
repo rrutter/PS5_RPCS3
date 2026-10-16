@@ -995,6 +995,36 @@ void ps5_thread_census(u64 now, u64 gap_start)
 	else if (rsx_op == 1)
 		ps5_fault("producer_stall", detail); // RSX idle GET==PUT: the game didn't feed it
 
+	// lab: the stranding watchdog + tattle (the safety net, swarm r4). The freeze = a SPURS kernel
+	// stranded asleep so it never posts its done-post -> the batch never completes -> no completion
+	// -> main hangs. Bug 1 (the cross-line PUTLLC discard) strands it with NO reservation + no LR
+	// wake; Bug 2 (the stamp-blind LR-wait) strands it with a stale stamp. At a freeze (main parked
+	// at 0xb6fe14 waiting for the completion), re-kick every parked kernel showing a stranded
+	// signature (set LR + notify its line at BOTH rtime parities) so it wakes + retries -> the batch
+	// completes. Each catch TATTLES (ps5_fault) so a clean run is PROVEN (the trigger fired + got
+	// healed), never luck. Lab-only (gated on rpcs3-strand-watchdog.txt); the bow gets Fix A+B only.
+	if (main_pc == 0xb6fe14)
+	{
+		static const bool strand_wd = fs::is_file("/app0/rpcs3-strand-watchdog.txt");
+		if (strand_wd)
+		{
+			idm::select<named_thread<spu_thread>>([&](u32, spu_thread& spu)
+			{
+				if (std::string_view(spu.get_name()).find("CellSpursKernel") == std::string_view::npos) return;
+				if (is_running(spu)) return; // only a parked kernel can be stranded
+				const u32 ra = spu.raddr;
+				const u64 rt = +spu.rtime;
+				const bool stale = ra && (vm::reservation_acquire(ra) != rt);
+				if (!ra || stale)
+				{
+					spu.set_events(SPU_EVENT_LR); // the doorbell (wakes the RdEventStat LR wait)
+					if (ra) { vm::reservation_notifier_notify(ra, rt); vm::reservation_notifier_notify(ra, rt + 128); } // both rtime parities
+					ps5_fault("stranded_kernel_rekick", fmt::format("kernel %s pc 0x%x raddr 0x%x rtime %llu cur %llu : %s", spu.get_name(), spu.pc, ra, rt, ra ? +vm::reservation_acquire(ra) : 0, stale ? "stale-stamp" : "no-reservation"));
+				}
+			});
+		}
+	}
+
 	// lab: dump the SPURS batch's claim/done line (0x5ad02e00) + wait line (0x5ad02f80) RAW,
 	// 128 bytes each - the done-accounting caught in the act with NO guessed offsets. The
 	// freeze = a job's done-post never lands -> the outstanding-count never hits target -> no
