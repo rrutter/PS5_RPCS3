@@ -4953,6 +4953,7 @@ bool spu_thread::process_mfc_cmd()
 		if (do_putllc(ch_mfc_cmd))
 		{
 			ch_atomic_stat.set_value(MFC_PUTLLC_SUCCESS);
+			g_ps5_putllc_ok.raw()++; // lab: the claim's success side (the cancer's nature probe)
 			putllc_fail_count = 0; // lab: a landed claim resets the storm streak
 			getllar_storm_count = 0; // lab: ...and the re-read storm's streak
 
