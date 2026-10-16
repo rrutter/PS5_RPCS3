@@ -1421,6 +1421,18 @@ int run(const char* boot_path)
 					if (!render) continue;
 					const u32 flips = render->int_flip_index;
 					const u64 now = get_system_time();
+					// lab: the lost-wake heal heartbeat - if the bounded wait is absorbing lost
+					// notifies, the counter climbs. Emit on change (throttled) so a CLEAN run still
+					// proves the trigger fired + was survived (luck-vs-fix); silence = no lost wakes.
+					{
+						static u64 s_heal_seen = 0, s_heal_emit = 0;
+						const u64 heal_now = g_ps5_lost_wake_heal.load();
+						if (heal_now != s_heal_seen && now - s_heal_emit > 3'000'000)
+						{
+							s_heal_seen = heal_now; s_heal_emit = now;
+							ps5_fault("lost_wake_heal_active", fmt::format("bounded wait absorbed %llu lost condvar notifies (self-healed, no freeze)", heal_now));
+						}
+					}
 					if (flips != last_flips)
 					{
 						if (last_flips && now - last_flip_time > 80'000)
