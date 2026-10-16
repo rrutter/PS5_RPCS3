@@ -2179,7 +2179,7 @@ void spu_thread::do_dma_transfer(spu_thread* _this, const spu_mfc_cmd& args, u8*
 
 	// lab: spy on SPU DMA of the SPURS instance region (flag /app0/spurs-dma-trace.txt)
 	static u32 spy_logged = 0;
-	if (spy_logged < 800 && ((eal - 0x5631a000u < 0x1000u) || (eal - 0x5ad02e00u < 0x300u)) && spurs_spy_on()) // lab: + the batch's claim/done/wait lines (0x5ad02e00 region) - watch the accounting diverge in the act
+	if (spy_logged < 800 && ((eal - 0x5631a000u < 0x1000u) || (!is_get && eal - 0x5ad02e00u < 0x300u)) && spurs_spy_on()) // lab: + the batch's claim/done lines, WRITE-ONLY (the read flood perturbs the timing - the observer effect)
 	{
 		spy_logged++;
 		const u8* p = is_get ? vm::get_super_ptr<u8>(eal) : ls + lsa;
@@ -3886,7 +3886,7 @@ void spu_thread::do_putlluc(const spu_mfc_cmd& args)
 	const u32 addr = args.eal & -128;
 
 	// lab: the ATOMIC path - the SPURS idle-marking rides PUTLLUC, if anywhere
-	if ((addr - 0x5631a000u < 0x1000u || addr - 0x5ad02e00u < 0x300u) && spurs_spy_on()) // lab: + the batch's lines
+	if (addr - 0x5631a000u < 0x1000u && spurs_spy_on())
 	{
 		const u8* s = _ptr<u8>(args.lsa & 0x3ff80);
 		spu_log.notice("spurs-atomic: PUTLLUC @%x (off %+d) raddr %x | idle-slot byte %02x | data %02x %02x %02x %02x %02x %02x %02x %02x",
