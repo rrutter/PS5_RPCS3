@@ -966,6 +966,14 @@ void ps5_thread_census(u64 now, u64 gap_start)
 	// 0x5ad02e00 + the wait line 0x5ad02f80) - read the diverged counters in the act
 	if (vm::check_addr(0x5ad02e00, vm::page_readable, 64) && vm::check_addr(0x5ad02f80, vm::page_readable, 64))
 		fmt::append(detail, " | batch: claim[0] %08x %08x done[0] %08x %08x | wait[73] %02x", +vm::read32(0x5ad02e00), +vm::read32(0x5ad02e04), +vm::read32(0x5ad02e10), +vm::read32(0x5ad02e14), +vm::_ref<u8>(0x5ad02f80 + 0x73));
+	// lab: the queue-depth read - at a freeze, is the completion SITTING in main's queue
+	// (undelivered) or absent? The queue with a parked PPU waiter = main's. depth>0 with a
+	// waiter parked = the wake failed (the condvar); depth 0 = the completion never landed.
+	idm::select<lv2_event_queue>([&](u32, lv2_event_queue& q)
+	{
+		if (q.pq) // a PPU thread parked on this queue
+			fmt::append(detail, " | queue 0x%x depth %u waiter-parked", q.id, static_cast<u32>(q.events.size()));
+	});
 	if (main_pc == 0xb3a4c8)
 		ps5_fault("gpuhang_watchdog", detail); // the game's own gpu-hang trap
 	else if (spu_run >= 3 && claim_rate > 20000)
