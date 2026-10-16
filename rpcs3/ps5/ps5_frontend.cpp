@@ -101,6 +101,7 @@ extern atomic_t<u64> g_ps5_putllc_ok;      // SPUThread.cpp: PUTLLC claim succes
 extern atomic_t<u64> g_ps5_putllc_fail;    // SPUThread.cpp: PUTLLC claim failures
 extern atomic_t<u64> g_ps5_writerlock_us;  // vm.cpp: total us in the writer_lock stop-the-world
 extern atomic_t<u64> g_ps5_writerlock_n;   // vm.cpp: ...across this many claims
+extern atomic_t<u64> g_ps5_lost_wake_heal; // atomic.cpp: lost condvar notifies self-healed by the bounded wait
 extern atomic_t<u64> g_ps5_frames_generated; // VKFrameGen.cpp: frames made between the game's
 extern atomic_t<int> g_ps5_rsx_core; // VKPresent.cpp: the core the RSX thread is running on (rsx_op_guard)
 
@@ -913,6 +914,7 @@ void ps5_thread_census(u64 now, u64 gap_start)
 	// the day we actually pin threads.
 	// collect the species-tells for the fault classifier while we list the threads
 	u32 main_pc = 0;
+	u32 main_sig = 0; // lab: was a wake SIGNALED to main while it sits parked? (the lost-wake tell)
 	int spu_run = 0, spu_claimpc = 0, spu_pending_mfc = 0;
 	const auto census = [&](const char* kind, auto& thr, u32 pc)
 	{
@@ -921,7 +923,7 @@ void ps5_thread_census(u64 now, u64 gap_start)
 	idm::select<named_thread<ppu_thread>>([&](u32, ppu_thread& ppu)
 	{
 		census("PPU", ppu, ppu.cia);
-		if (ppu.id == 0x1000000) main_pc = ppu.cia;
+		if (ppu.id == 0x1000000) { main_pc = ppu.cia; main_sig = (ppu.state & cpu_flag::signal) ? 1 : 0; } // signal set but parked = a wake was sent + lost
 	});
 	idm::select<named_thread<spu_thread>>([&](u32, spu_thread& spu)
 	{
@@ -961,7 +963,7 @@ void ps5_thread_census(u64 now, u64 gap_start)
 	// the claim's success/failure split + the writer_lock safepoint's avg cost (the
 	// root-fix premises, measured): pure livelock = 0 ok, and whether the safepoint dominates
 	const u64 wn = g_ps5_writerlock_n.load();
-	std::string detail = fmt::format("rsx_op %u core %d main 0x%x spu_run %d claim %llu/s pend_mfc %d | claimok %llu fail %llu | writerlock %lluus/claim", rsx_op, g_ps5_rsx_core.load(), main_pc, spu_run, claim_rate, spu_pending_mfc, g_ps5_putllc_ok.load(), g_ps5_putllc_fail.load(), wn ? g_ps5_writerlock_us.load() / wn : 0);
+	std::string detail = fmt::format("rsx_op %u core %d main 0x%x spu_run %d claim %llu/s pend_mfc %d | claimok %llu fail %llu | writerlock %lluus/claim | heal %llu main_sig %u", rsx_op, g_ps5_rsx_core.load(), main_pc, spu_run, claim_rate, spu_pending_mfc, g_ps5_putllc_ok.load(), g_ps5_putllc_fail.load(), wn ? g_ps5_writerlock_us.load() / wn : 0, g_ps5_lost_wake_heal.load(), main_sig);
 	// lab: the batch's accounting lines at the frozen moment (the claim/done line
 	// 0x5ad02e00 + the wait line 0x5ad02f80) - read the diverged counters in the act
 	if (vm::check_addr(0x5ad02e00, vm::page_readable, 64) && vm::check_addr(0x5ad02f80, vm::page_readable, 64))

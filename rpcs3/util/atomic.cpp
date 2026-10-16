@@ -12,6 +12,10 @@ const bool utils::g_atomic_lse2 = utils::has_lse2();
 #define USE_STD
 #endif
 
+// PS5 hunt: counts lost std::condition_variable notifications self-healed by the bounded
+// wait below (the USE_STD infinite-wait hole). Read + reported by the census (ps5_frontend).
+atomic_t<u64> g_ps5_lost_wake_heal{};
+
 #ifdef _MSC_VER
 
 #include "emmintrin.h"
@@ -1125,7 +1129,20 @@ atomic_wait_engine::wait(const void* data, u32 old_value, u64 timeout, atomic_wa
 		}
 		else
 		{
-			cond->cv->wait(lock);
+			// PS5 (USE_STD): the console's std::condition_variable can drop a notify (the
+			// author's own "locking is required to avoid lost notifications"; the __PROSPERO__
+			// EDEADLK workaround above shows how fragile this path is here). An UNBOUNDED wait
+			// turns one lost notify into a permanent freeze - the SPURS lost-completion: main
+			// parks in sys_event_queue_receive, the completion's wake is signaled but the notify
+			// vanishes, main sleeps forever. Bound it: wake every 1ms to re-test the condition,
+			// so a lost wake self-heals into a sub-frame hiccup instead of a freeze. If we timed
+			// out yet the value already changed, a notify was lost and we just absorbed it -
+			// count it, which both proves the disease and confirms the cure is engaging.
+			if (cond->cv->wait_for(lock, std::chrono::microseconds(1000)) == std::cv_status::timeout
+				&& !ptr_cmp(data, old_value, ext))
+			{
+				g_ps5_lost_wake_heal.raw()++;
+			}
 		}
 #elif defined(_WIN32)
 		LARGE_INTEGER qw;
