@@ -68,6 +68,7 @@ atomic_t<u64> g_ps5_putllc_fail{};
 atomic_t<u64> g_ps5_batch_ok{};
 atomic_t<u64> g_ps5_batch_fail_cont{};
 atomic_t<u64> g_ps5_batch_fail_spu{};
+atomic_t<u64> g_ps5_backoff_parks{}; // lab: how many times the escalating PUTLLC-failure park fired
 atomic_t<u64> g_ps5_writerlock_us{}; // total us spent in vm::writer_lock (vm.cpp)
 atomic_t<u64> g_ps5_writerlock_n{};  // ...across this many claims
 #endif
@@ -3719,6 +3720,7 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 		}
 
 		perf0.reset();
+		ps5_putllc_fail_streak = 0; // lab: a landed done-post resets the backoff streak
 		return true;
 	}
 	else
@@ -3746,6 +3748,28 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 
 		raddr = 0;
 		perf1.reset();
+
+		// lab: the escalating PUTLLC-failure park - the convicted cure for the claim/done
+		// livelock (swarm r2). A failed PUTLLC sets SPU_EVENT_LR which INSTANTLY re-arms the
+		// guest's retry = the self-exciting storm; and the guest's natural yield-down is
+		// hardcoded to a wrong build's pc. Break it here: on repeated contention failures,
+		// park the loser an escalating capped duration so losers go cheap+rare and the
+		// winner's done-post lands -> batch completes -> main wakes. Lab-only (the bow stays
+		// naive). The first attempt keyed on a 16-in-a-row streak and never engaged (the
+		// storm is GLOBAL line contention - no one kernel fails 16 straight); this uses a low
+		// threshold so it actually fires, and g_ps5_backoff_parks proves it (measure twice).
+		static const bool s_backoff = fs::is_file("/app0/rpcs3-claim-backoff.txt");
+		if (s_backoff)
+		{
+			const u32 streak = ++ps5_putllc_fail_streak;
+			if (streak >= 6)
+			{
+				g_ps5_backoff_parks.raw()++;
+				const u32 us = std::min(40u << std::min(streak - 6, 5u), 2000u); // 40us -> 2ms cap
+				std::this_thread::sleep_for(std::chrono::microseconds(us));
+			}
+		}
+
 		return false;
 	}
 }

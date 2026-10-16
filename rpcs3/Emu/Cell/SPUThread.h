@@ -712,6 +712,7 @@ public:
 	u64 rtime = 0;
 	alignas(64) std::byte rdata[128]{};
 	u32 raddr = 0;
+	u32 ps5_putllc_fail_streak = 0; // lab: consecutive PUTLLC contention failures (the escalating backoff)
 	const decltype(rdata)* resrv_mem{};
 
 	// Range Lock pointer
