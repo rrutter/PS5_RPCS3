@@ -4984,13 +4984,35 @@ bool spu_thread::process_mfc_cmd()
 			// claim failures a kernel eats before one lands - so the future backoff fix is
 			// tuned on data, not vibes. Passive: a counter + a rare gated log. Zero cost
 			// unarmed (the bow never carries the flag).
+			// lab: the contention-collapse instruments + the structural cure. Flags:
+			// rpcs3-putllc-storm.txt = trace the failure cadence (the debug probe), and
+			// rpcs3-putllc-backoff.txt = the escalating park (THE CURE, proof flight).
+			// Both inert on the bow (the release) - it inherits the cure only once proven.
 			static const bool storm_log = fs::is_file("/app0/rpcs3-putllc-storm.txt");
-			if (storm_log)
+			static const bool backoff_on = fs::is_file("/app0/rpcs3-putllc-backoff.txt");
+			if (storm_log || backoff_on)
 			{
 				const u32 line = ch_mfc_cmd.eal & ~127u;
 				if (line == putllc_fail_addr) putllc_fail_count++; else { putllc_fail_addr = line; putllc_fail_count = 1; }
-				if (putllc_fail_count >= 16 && (putllc_fail_count & (putllc_fail_count - 1)) == 0) // each power-of-two past 16
+
+				if (storm_log && putllc_fail_count >= 16 && (putllc_fail_count & (putllc_fail_count - 1)) == 0) // each power-of-two past 16
 					spu_log.notice("lab putllc-storm: %s line 0x%x, %u consecutive claim failures (pc 0x%x)", get_name(), putllc_fail_addr, putllc_fail_count, pc);
+
+				// the cure: a losing claim becomes cheap + rare (the hardware property), not
+				// free to instantly re-collide 665k/s. After 8 consecutive failures on a line,
+				// park on the reservation notifier with a capped exponential timeout
+				// (50us -> ~1.6ms); the winner's commit bumps the stamp and wakes us post-change.
+				if (backoff_on && putllc_fail_count >= 8)
+				{
+					const u32 shift = std::min(putllc_fail_count - 8, 5u);
+					const u32 timeout_ns = (50u << shift) * 1000;
+					const u32 laddr = ch_mfc_cmd.eal & -128;
+					if (auto [wait_var, flag_val] = vm::reservation_notifier_begin_wait(laddr, vm::reservation_acquire(laddr)); wait_var)
+					{
+						utils::bless<atomic_t<u32>>(&wait_var->raw().wait_flag)->wait(flag_val, atomic_wait_timeout{timeout_ns});
+						vm::reservation_notifier_end_wait(*wait_var);
+					}
+				}
 			}
 		}
 
