@@ -5000,18 +5000,15 @@ bool spu_thread::process_mfc_cmd()
 
 				// the cure: a losing claim becomes cheap + rare (the hardware property), not
 				// free to instantly re-collide 665k/s. After 8 consecutive failures on a line,
-				// park on the reservation notifier with a capped exponential timeout
-				// (50us -> ~1.6ms); the winner's commit bumps the stamp and wakes us post-change.
+				// a progressive hardware PAUSE thins the collision rate while keeping the thread
+				// HOT - it never sleeps, so it never misses the line's state change or a DMA
+				// completion (the deep-sleep lost-wake is dodged entirely).
 				if (backoff_on && putllc_fail_count >= 8)
 				{
-					const u32 shift = std::min(putllc_fail_count - 8, 5u);
-					const u32 timeout_ns = (50u << shift) * 1000;
-					const u32 laddr = ch_mfc_cmd.eal & -128;
-					if (auto [wait_var, flag_val] = vm::reservation_notifier_begin_wait(laddr, vm::reservation_acquire(laddr)); wait_var)
-					{
-						utils::bless<atomic_t<u32>>(&wait_var->raw().wait_flag)->wait(flag_val, atomic_wait_timeout{timeout_ns});
-						vm::reservation_notifier_end_wait(*wait_var);
-					}
+					const u32 shift = std::min(putllc_fail_count - 8, 8u);
+					const u32 spins = 16u << shift; // 16 .. ~4096 pause iterations, growing with the streak
+					for (u32 i = 0; i < spins; i++)
+						utils::pause(); // x86 PAUSE - hint the CPU to back off the cache line
 				}
 			}
 		}
