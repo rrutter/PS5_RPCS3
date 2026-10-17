@@ -119,6 +119,51 @@ shared_ptr<lv2_event_queue> lv2_event_queue::find(u64 ipc_key)
 
 extern void resume_spu_thread_group_from_waiting(spu_thread& spu, std::array<shared_ptr<named_thread<spu_thread>>, 8>& notify_spus);
 
+// lab: the queue-traffic watch (the missed-rendezvous instrument). The freeze = a
+// guest-protocol rendezvous lost: the batch drains clean (the finisher watch proved it),
+// then the phase-complete sentinel is never generated. The dropping hop lives in the
+// cascade: kernels -> the channel queues (spup 2-4) + the SPURS system queue (spup 10-15)
+// -> the PPU helpers -> main. This ring records every send / receive / park on the watched
+// queues. The watch set self-populates: queues bound to a SPURS kernel group's ports
+// register at connect (sys_spu.cpp), and any queue main_thread parks on registers itself.
+// 64-deep: at a freeze the traffic has stopped, so the tail IS the drain window.
+// op: 0=SEND-Q (queued to backlog) 1=SEND-WAKE (direct handoff to a parked PPU) 2=SEND-FAIL
+// (d2: 1=notconn 2=full 3=ignored) 5=SEND-SPU (direct to a parked SPU's in-mbox) 3=RECV
+// (popped; tryreceive batches use d2=count) 4=PARK (empty -> sleeping; d0=timeout).
+// fields: who = the host thread id; d0/d1 = the event's tuple words 1/2 (spu sends: the
+// sender's lv2_id + data0; ppu port sends: data1 + data2); for direct-handoff sends d2 =
+// the RECEIVER's id; for queued sends d2 = the resulting backlog depth.
+struct ps5_qop_t { u64 seq; u32 qid; u32 op; u32 who; u32 d0; u32 d1; u32 d2; };
+ps5_qop_t g_ps5_qops[64]{};
+atomic_t<u64> g_ps5_qops_seq{};
+
+u32 g_ps5_qwatch[16]{};
+atomic_t<u32> g_ps5_qwatch_cnt{};
+
+void ps5_qwatch_add(u32 qid)
+{
+	const u32 n = g_ps5_qwatch_cnt.load();
+	for (u32 i = 0; i < n && i < 16; i++)
+		if (g_ps5_qwatch[i] == qid) return;
+	if (n < 16)
+		g_ps5_qwatch[g_ps5_qwatch_cnt.raw()++] = qid; // a raced dup is harmless
+}
+
+static bool ps5_qwatch_has(u32 qid)
+{
+	const u32 n = g_ps5_qwatch_cnt.load();
+	for (u32 i = 0; i < n && i < 16; i++)
+		if (g_ps5_qwatch[i] == qid) return true;
+	return false;
+}
+
+static void ps5_qop_rec(u32 qid, u32 op, u32 who, u32 d0, u32 d1, u32 d2)
+{
+	const u64 s = g_ps5_qops_seq.raw()++;
+	auto& e = g_ps5_qops[s % 64];
+	e.seq = s; e.qid = qid; e.op = op; e.who = who; e.d0 = d0; e.d1 = d1; e.d2 = d2;
+}
+
 CellError lv2_event_queue::send(lv2_event event, bool* notified_thread, lv2_event_port* port)
 {
 	if (notified_thread)
@@ -144,8 +189,17 @@ CellError lv2_event_queue::send(lv2_event event, bool* notified_thread, lv2_even
 
 	std::lock_guard lock(mutex);
 
+	// lab: the queue-traffic watch (watched queues only)
+	const bool qw = ps5_qwatch_has(id);
+	u32 qsrc = 0;
+	if (qw)
+	{
+		if (const auto cpu = get_current_cpu_thread()) qsrc = cpu->id;
+	}
+
 	if (!exists)
 	{
+		if (qw) ps5_qop_rec(id, 2, qsrc, static_cast<u32>(std::get<1>(event)), static_cast<u32>(std::get<2>(event)), 1);
 		return CELL_ENOTCONN;
 	}
 
@@ -155,9 +209,11 @@ CellError lv2_event_queue::send(lv2_event event, bool* notified_thread, lv2_even
 		{
 			// Save event
 			events.emplace_back(event);
+			if (qw) ps5_qop_rec(id, 0, qsrc, static_cast<u32>(std::get<1>(event)), static_cast<u32>(std::get<2>(event)), events.size());
 			return {};
 		}
 
+		if (qw) ps5_qop_rec(id, 2, qsrc, static_cast<u32>(std::get<1>(event)), static_cast<u32>(std::get<2>(event)), 2);
 		return CELL_EBUSY;
 	}
 
@@ -182,6 +238,8 @@ CellError lv2_event_queue::send(lv2_event event, bool* notified_thread, lv2_even
 		std::tie(ppu.gpr[4], ppu.gpr[5], ppu.gpr[6], ppu.gpr[7]) = event;
 
 		awake(&ppu);
+
+		if (qw) ps5_qop_rec(id, 1, qsrc, static_cast<u32>(std::get<1>(event)), static_cast<u32>(std::get<2>(event)), ppu.id);
 
 		if (port && ppu.prio.load().prio < ensure(cpu_thread::get_current<ppu_thread>())->prio.load().prio)
 		{
@@ -215,6 +273,8 @@ CellError lv2_event_queue::send(lv2_event event, bool* notified_thread, lv2_even
 		const u32 data3 = static_cast<u32>(std::get<3>(event));
 		spu.ch_in_mbox.set_values(4, CELL_OK, data1, data2, data3);
 		resume_spu_thread_group_from_waiting(spu, notify_spus.spus);
+
+		if (qw) ps5_qop_rec(id, 5, qsrc, data1, data2, spu.lv2_id);
 	}
 
 	return {};
@@ -453,6 +513,10 @@ error_code sys_event_queue_tryreceive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sy
 		queue->events.pop_front();
 	}
 
+	// lab: the queue-traffic watch - a drained batch via tryreceive, one record per call
+	if (count && ps5_qwatch_has(equeue_id))
+		ps5_qop_rec(equeue_id, 3, ppu.id, static_cast<u32>(events[0].source), static_cast<u32>(events[0].data1), count);
+
 	lock.unlock();
 	ppu.check_state();
 
@@ -491,10 +555,21 @@ error_code sys_event_queue_receive(ppu_thread& ppu, u32 equeue_id, vm::ptr<sys_e
 
 		if (queue.events.empty())
 		{
+			// lab: the rendezvous record - a parker on a watched queue; main_thread's parks
+			// always record AND auto-watch the queue (so its late senders get caught too)
+			if (ps5_qwatch_has(equeue_id) || ppu.id == 0x1000000)
+			{
+				ps5_qop_rec(equeue_id, 4, ppu.id, static_cast<u32>(timeout), 0, 0);
+				if (ppu.id == 0x1000000) ps5_qwatch_add(equeue_id);
+			}
+
 			queue.sleep(ppu, timeout);
 			lv2_obj::emplace(queue.pq, &ppu);
 			return CELL_EBUSY;
 		}
+
+		if (ps5_qwatch_has(equeue_id))
+			ps5_qop_rec(equeue_id, 3, ppu.id, static_cast<u32>(std::get<0>(queue.events.front())), static_cast<u32>(std::get<1>(queue.events.front())), queue.events.size());
 
 		std::tie(ppu.gpr[4], ppu.gpr[5], ppu.gpr[6], ppu.gpr[7]) = queue.events.front();
 		queue.events.pop_front();

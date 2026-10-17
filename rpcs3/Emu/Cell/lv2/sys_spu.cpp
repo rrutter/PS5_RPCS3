@@ -2327,6 +2327,14 @@ error_code sys_spu_thread_group_connect_event_all_threads(ppu_thread& ppu, u32 i
 		return CELL_ESRCH;
 	}
 
+	// lab: the queue-traffic watch - a queue bound to a SPURS kernel group's ports joins
+	// the watch set (the rendezvous cascade's channels self-register at scene setup)
+	if (group->name.ends_with("CellSpursKernelGroup"))
+	{
+		extern void ps5_qwatch_add(u32);
+		ps5_qwatch_add(eq);
+	}
+
 	std::unique_lock lock(group->mutex);
 
 	if (auto state = +group->run_state;

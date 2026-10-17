@@ -116,6 +116,12 @@ extern ps5_batchw_t g_ps5_batchw[24];       // SPUThread.cpp: the batch-region w
 extern atomic_t<u64> g_ps5_batchw_seq;      // ...its write cursor
 extern atomic_t<u64> g_ps5_pin_kernel;      // Thread.cpp: threads seated on the exclusive SPURS kernel set
 extern atomic_t<u64> g_ps5_pin_house;       // ...and on the house set (the scheduling contract)
+// the queue-traffic watch (identical def to sys_event.cpp - ODR-legal, token-identical)
+struct ps5_qop_t { u64 seq; u32 qid; u32 op; u32 who; u32 d0; u32 d1; u32 d2; };
+extern ps5_qop_t g_ps5_qops[64];            // sys_event.cpp: the cascade send/receive/park ring
+extern atomic_t<u64> g_ps5_qops_seq;        // ...its write cursor
+extern u32 g_ps5_qwatch[16];                // ...the watched-queue set (self-populating)
+extern atomic_t<u32> g_ps5_qwatch_cnt;
 extern atomic_t<u64> g_ps5_frames_generated; // VKFrameGen.cpp: frames made between the game's
 extern atomic_t<int> g_ps5_rsx_core; // VKPresent.cpp: the core the RSX thread is running on (rsx_op_guard)
 
@@ -1118,6 +1124,26 @@ void ps5_thread_census(u64 now, u64 gap_start)
 				std::byteswap(e.oldv[0]), std::byteswap(e.oldv[1]), std::byteswap(e.oldv[2]), std::byteswap(e.oldv[3]),
 				std::byteswap(e.newv[0]), std::byteswap(e.newv[1]), std::byteswap(e.newv[2]), std::byteswap(e.newv[3]));
 		}
+	}
+
+	// lab: the queue-traffic watch dump - the cascade's last ops on the watched queues.
+	// The rendezvous question, answered at the tape: did the kicks land in the system
+	// queue? did the helper consume them? did anything ever target main's queue?
+	{
+		const u64 total = g_ps5_qops_seq.load();
+		const u64 start = total > 64 ? total - 64 : 0;
+		fmt::append(out, "       queue traffic (last %llu ops on watched queues, oldest->newest):\n", total > 64 ? 64ull : total);
+		for (u64 s = start; s < total; s++)
+		{
+			const auto& e = g_ps5_qops[s % 64];
+			if (e.seq != s) continue; // a slot not written this wrap
+			const char* opname = e.op == 0 ? "SEND-Q " : e.op == 1 ? "SEND-WAKE" : e.op == 2 ? "SEND-FAIL" : e.op == 3 ? "RECV " : e.op == 4 ? "PARK " : e.op == 5 ? "SEND-SPU " : "?";
+			fmt::append(out, "         #%llu q 0x%x %s who 0x%x d0 %08x d1 %08x d2 %08x\n", e.seq, e.qid, opname, e.who, e.d0, e.d1, e.d2);
+		}
+		fmt::append(out, "       watched queues:");
+		const u32 wn2 = g_ps5_qwatch_cnt.load();
+		for (u32 i = 0; i < wn2 && i < 16; i++) fmt::append(out, " 0x%x", g_ps5_qwatch[i]);
+		fmt::append(out, "\n");
 	}
 
 	if (FILE* f = std::fopen("/app0/rpcs3-threadcensus.txt", "a"))
