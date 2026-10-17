@@ -110,6 +110,12 @@ extern atomic_t<u64> g_ps5_backoff_parks;   // SPUThread.cpp: the escalating PUT
 struct ps5_trail_t { u64 seq; u64 rtime; u32 kernel; u32 pc; u32 addr; u32 kind; u32 repeats; };
 extern ps5_trail_t g_ps5_trail[32];         // SPUThread.cpp: the last-32-SPURS-ops ring
 extern atomic_t<u64> g_ps5_trail_seq;       // ...its write cursor
+// the finisher watch (identical def to SPUThread.cpp - ODR-legal, token-identical)
+struct ps5_batchw_t { u64 seq; u64 rtime; u32 kernel; u32 pc; u32 addr; u32 lane; u32 oldv[4]; u32 newv[4]; };
+extern ps5_batchw_t g_ps5_batchw[24];       // SPUThread.cpp: the batch-region write-content ring
+extern atomic_t<u64> g_ps5_batchw_seq;      // ...its write cursor
+extern atomic_t<u64> g_ps5_pin_kernel;      // Thread.cpp: threads seated on the exclusive SPURS kernel set
+extern atomic_t<u64> g_ps5_pin_house;       // ...and on the house set (the scheduling contract)
 extern atomic_t<u64> g_ps5_frames_generated; // VKFrameGen.cpp: frames made between the game's
 extern atomic_t<int> g_ps5_rsx_core; // VKPresent.cpp: the core the RSX thread is running on (rsx_op_guard)
 
@@ -971,7 +977,7 @@ void ps5_thread_census(u64 now, u64 gap_start)
 	// the claim's success/failure split + the writer_lock safepoint's avg cost (the
 	// root-fix premises, measured): pure livelock = 0 ok, and whether the safepoint dominates
 	const u64 wn = g_ps5_writerlock_n.load();
-	std::string detail = fmt::format("rsx_op %u core %d main 0x%x spu_run %d claim %llu/s pend_mfc %d | claimok %llu fail %llu | writerlock %lluus/claim | heal %llu main_sig %u | batch ok %llu cont %llu spu %llu | parks %llu", rsx_op, g_ps5_rsx_core.load(), main_pc, spu_run, claim_rate, spu_pending_mfc, g_ps5_putllc_ok.load(), g_ps5_putllc_fail.load(), wn ? g_ps5_writerlock_us.load() / wn : 0, g_ps5_lost_wake_heal.load(), main_sig, g_ps5_batch_ok.load(), g_ps5_batch_fail_cont.load(), g_ps5_batch_fail_spu.load(), g_ps5_backoff_parks.load());
+	std::string detail = fmt::format("rsx_op %u core %d main 0x%x spu_run %d claim %llu/s pend_mfc %d | claimok %llu fail %llu | writerlock %lluus/claim | heal %llu main_sig %u | batch ok %llu cont %llu spu %llu | parks %llu | pin k%llu h%llu", rsx_op, g_ps5_rsx_core.load(), main_pc, spu_run, claim_rate, spu_pending_mfc, g_ps5_putllc_ok.load(), g_ps5_putllc_fail.load(), wn ? g_ps5_writerlock_us.load() / wn : 0, g_ps5_lost_wake_heal.load(), main_sig, g_ps5_batch_ok.load(), g_ps5_batch_fail_cont.load(), g_ps5_batch_fail_spu.load(), g_ps5_backoff_parks.load(), g_ps5_pin_kernel.load(), g_ps5_pin_house.load());
 	// lab: the batch's accounting lines at the frozen moment (the claim/done line
 	// 0x5ad02e00 + the wait line 0x5ad02f80) - read the diverged counters in the act
 	if (vm::check_addr(0x5ad02e00, vm::page_readable, 64) && vm::check_addr(0x5ad02f80, vm::page_readable, 64))
@@ -1092,6 +1098,25 @@ void ps5_thread_census(u64 now, u64 gap_start)
 			if (e.seq != s) continue; // a slot not written this wrap
 			fmt::append(out, "         #%llu K%u pc 0x%x %s 0x%x rtime %llu x%u\n", e.seq, e.kernel, e.pc,
 				e.kind == 4 ? "SIGNAL " : (e.kind == 3 ? "SEND-DEAD " : (e.kind == 2 ? "SEND " : (e.kind == 1 ? "PUT-OK " : "PUT-FAIL"))), e.addr, e.rtime, e.repeats);
+		}
+	}
+
+	// lab: the finisher watch dump - the batch claim/done region's last landed writes WITH
+	// content (guest-order u32s, matching the line dumps above). The freeze question it
+	// answers: did the batch drain with no fire (the last-finisher decision/preemption gap)
+	// or is one slot still outstanding (a done-post truly lost)? The accounting, in the act.
+	{
+		const u64 total = g_ps5_batchw_seq.load();
+		const u64 start = total > 24 ? total - 24 : 0;
+		fmt::append(out, "       finisher watch (last %llu batch-region writes, oldest->newest):\n", total > 24 ? 24ull : total);
+		for (u64 s = start; s < total; s++)
+		{
+			const auto& e = g_ps5_batchw[s % 24];
+			if (e.seq != s) continue; // a slot not written this wrap
+			fmt::append(out, "         #%llu K%u pc 0x%x line 0x%x lane %u  old %08x %08x %08x %08x  new %08x %08x %08x %08x\n",
+				e.seq, e.kernel, e.pc, e.addr, e.lane,
+				std::byteswap(e.oldv[0]), std::byteswap(e.oldv[1]), std::byteswap(e.oldv[2]), std::byteswap(e.oldv[3]),
+				std::byteswap(e.newv[0]), std::byteswap(e.newv[1]), std::byteswap(e.newv[2]), std::byteswap(e.newv[3]));
 		}
 	}
 

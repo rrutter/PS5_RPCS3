@@ -3127,8 +3127,75 @@ void thread_base::initialize(void (*error_cb)())
 	set_name(thread_ctrl::get_name_cached());
 }
 
+#ifdef __PROSPERO__
+// lab: threads seated by the SPURS scheduling contract (the census reads the split).
+atomic_t<u64> g_ps5_pin_kernel{};
+atomic_t<u64> g_ps5_pin_house{};
+
+// lab: /app0/rpcs3-spurs-pin.txt = the SPURS scheduling contract (the startability-wedge
+// fix). The guest SPURS protocol was built for dedicated, never-preempted SPUs: its
+// claim->run->done->fire windows are microsecond-scale and it has no recovery for a kernel
+// descheduled mid-protocol. Here every thread floats over 13 shared cores at one priority,
+// so a kernel is preempted by anything (the storm's losers, a compile worker, RSX) and the
+// window stretches ~1000x - the freeze is the tail of that. The contract partitions the box:
+// the CellSpursKernel threads get an exclusive 6-core set (5 kernels + a spare - no
+// preemption of a kernel by another emu thread, no migration-stretched claim window), and
+// everything else (PPU main/the producer, RSX, compiles, FMOD) gets the other 7, so the
+// control path always runs. Placement only, correctness-neutral; flagged off = naive.
+static void ps5_sched_contract(std::string_view name)
+{
+	static const bool enabled = fs::is_file("/app0/rpcs3-spurs-pin.txt");
+	if (!enabled)
+		return;
+
+	static const std::pair<u64, u64> masks = []()
+	{
+		u64 mask = 0;
+		if (scePthreadGetaffinity(pthread_self(), &mask) != 0 || !mask)
+			mask = 0x1fff; // the measured truth on this console (the boot census: sysconf lies 16)
+
+		u64 km = 0, hm = 0;
+		int k = 0;
+		for (int i = 63; i >= 0; i--) // the kernels take the TOP 6 usable logicals (dodge any OS-housekeeping bias on the low end)
+		{
+			if (mask & (1ull << i))
+			{
+				if (k < 6) { km |= 1ull << i; k++; }
+				else hm |= 1ull << i;
+			}
+		}
+		if (!hm) { km = 0; hm = mask; } // a degenerate box: don't strangle it, stay naive
+
+		if (km)
+			sig_log.notice("lab: SPURS scheduling contract ENGAGED - kernel set 0x%llx (exclusive), house set 0x%llx", km, hm);
+		return std::pair{km, hm};
+	}();
+
+	const u64 want = (masks.first && name.find("CellSpursKernel") != std::string_view::npos) ? masks.first : masks.second;
+	if (!want)
+		return;
+
+	if (scePthreadSetaffinity(pthread_self(), want) == 0)
+	{
+		if (want == masks.first) g_ps5_pin_kernel.raw()++;
+		else g_ps5_pin_house.raw()++;
+	}
+	else
+	{
+		static atomic_t<u32> s_failed{};
+		if (s_failed++ < 5)
+			sig_log.error("lab: SPURS contract pin FAILED for '%s' (mask 0x%llx)", std::string(name), want);
+	}
+}
+#endif
+
 void thread_base::set_name(std::string name)
 {
+#ifdef __PROSPERO__
+	// lab: seat the thread by role the moment it is named (a SPURS kernel's re-naming at
+	// group start re-seats it onto the kernel set). Always runs on the owning thread.
+	ps5_sched_contract(name);
+#endif
 #ifdef _WIN32
 	if (SetThreadDescriptionImport)
 	{

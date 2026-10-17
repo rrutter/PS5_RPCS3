@@ -79,6 +79,16 @@ struct ps5_trail_t { u64 seq; u64 rtime; u32 kernel; u32 pc; u32 addr; u32 kind;
 ps5_trail_t g_ps5_trail[32]{};
 atomic_t<u64> g_ps5_trail_seq{};
 
+// lab: the finisher watch - the batch claim/done region's write CONTENT (the done-accounting's
+// final movements). The freeze = the last done-post LANDS but the last-finisher's completion
+// fire never follows; the ok/fail ring can't say WHY. This ring reads the accounting itself:
+// which 16-byte lane moved, old->new, by which kernel, at which pc - so the frozen tape splits
+// 'batch drained, nobody fired' (the decision misread / the preemption gap) from 'one slot
+// still outstanding' (a done-post truly lost). 24-deep, no dedup: the evolution IS the data.
+struct ps5_batchw_t { u64 seq; u64 rtime; u32 kernel; u32 pc; u32 addr; u32 lane; u32 oldv[4]; u32 newv[4]; };
+ps5_batchw_t g_ps5_batchw[24]{};
+atomic_t<u64> g_ps5_batchw_seq{};
+
 // lab: the flight-recorder write, with the user's dedup - a run of the SAME op (kernel/pc/addr/
 // kind) collapses into a repeat count instead of flooding the ring, so a flood (FMOD's audio sends,
 // or a kernel's storm retries) can't shove the real sequence out the back. The tail stays the
@@ -3724,6 +3734,25 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 		if (putllc_ok) g_ps5_batch_ok.raw()++;
 		else if (((+vm::reservation_acquire(addr)) & -128) != (rtime & -128)) g_ps5_batch_fail_cont.raw()++;
 		else g_ps5_batch_fail_spu.raw()++;
+	}
+
+	// lab: the finisher watch - a LANDED write on a batch region (or the sibling channel's)
+	// records WHICH 16-byte lane moved, old->new. Success only (a failed PUTLLC moves nothing);
+	// a content-identical writeback moves no lane and records nothing by construction.
+	if (putllc_ok && ((addr - 0x5ad02e00u) < 0x300u || (addr - 0x1038ec00u) < 0x300u))
+	{
+		const std::byte* nw = _ref<spu_rdata_t>(args.lsa & 0x3ff80);
+		for (u32 lane = 0; lane < 8; lane++)
+		{
+			if (std::memcmp(rdata + lane * 16, nw + lane * 16, 16) != 0)
+			{
+				const u64 s = g_ps5_batchw_seq.raw()++;
+				auto& e = g_ps5_batchw[s % 24];
+				e.seq = s; e.rtime = rtime; e.kernel = index; e.pc = pc; e.addr = addr; e.lane = lane;
+				std::memcpy(e.oldv, rdata + lane * 16, 16);
+				std::memcpy(e.newv, nw + lane * 16, 16);
+			}
+		}
 	}
 
 	// lab: the flight recorder - record every SPURS-line PUTLLC (the batch claim/done line
