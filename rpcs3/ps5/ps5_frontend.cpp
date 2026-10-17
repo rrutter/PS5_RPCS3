@@ -1053,10 +1053,10 @@ void ps5_thread_census(u64 now, u64 gap_start)
 	// 0x24a90). On the first freeze-shaped census, lift ALL SPURS kernels' FULL local storage
 	// (256KB each) + the kernel contexts (wklLocContention at LS 0x180 etc.) for offline disasm.
 	// One shot per boot - one freeze's worth answers the protocol question forever.
-	static bool ls_full_dumped = false;
-	if (!ls_full_dumped && main_pc == 0xb6fe14 && spu_pending_mfc >= 3)
+	// (always re-fire while the freeze shape holds: the LAST capture before the user closes
+	// is the deepest frozen state - the transient stalls get overwritten by the real one)
+	if (main_pc == 0xb6fe14 && spu_pending_mfc >= 3)
 	{
-		ls_full_dumped = true;
 		if (FILE* f = std::fopen("/app0/spu-ls-full.bin", "wb"))
 		{
 			idm::select<named_thread<spu_thread>>([&](u32, spu_thread& spu)
