@@ -991,6 +991,26 @@ void ps5_thread_census(u64 now, u64 gap_start)
 	{
 		fmt::append(detail, " | q 0x%x rd 0x%x dp %u ex %d", q.id, q.pq ? q.pq->id : 0, static_cast<u32>(q.events.size()), q.exists ? 1 : 0);
 	});
+	// lab: the SPURS startability decode - the dispatch wedge. The freeze = the batch's final job
+	// completes but the fire never follows. Is a job stuck READY-BUT-NOT-STARTABLE (the SPURS gate:
+	// maxContention > currentContention AND readyCount+idle > contention, cellSpursSpu.cpp:331)? If a
+	// workload's maxed on contention with idle kernels, a new job never dispatches -> never completes
+	// -> no last-finisher fire -> main hangs. Decisive: wedge vs done-but-unfired.
+	if (vm::check_addr(0x5631a300, vm::page_readable, 0x90))
+	{
+		const u32 nspus = +vm::_ref<u8>(0x5631a300 + 0x76);
+		const u32 idle = +vm::_ref<u8>(0x5631a300 + 0x73);
+		for (u32 w = 0; w < 16; w++)
+		{
+			const u32 st = +vm::_ref<u8>(0x5631a300 + 0x80 + w);
+			const u32 rc = +vm::_ref<u8>(0x5631a300 + 0x00 + w);
+			const u32 ct = +vm::_ref<u8>(0x5631a300 + 0x20 + w);
+			const u32 mx = +vm::_ref<u8>(0x5631a300 + 0x50 + w);
+			if (st || rc || ct || mx)
+				fmt::append(detail, " | w%u st%u rc%u ct%u mx%u%s", w, st, rc, ct, mx, (rc && mx && ct >= mx) ? " WEDGE" : "");
+		}
+		fmt::append(detail, " | nspu %u idle %02x", nspus, idle);
+	}
 	if (main_pc == 0xb3a4c8)
 		ps5_fault("gpuhang_watchdog", detail); // the game's own gpu-hang trap
 	else if (spu_run >= 3 && claim_rate > 20000)
