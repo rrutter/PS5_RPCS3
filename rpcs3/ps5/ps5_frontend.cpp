@@ -1046,6 +1046,33 @@ void ps5_thread_census(u64 now, u64 gap_start)
 	// signature (set LR + notify its line at BOTH rtime parities) so it wakes + retries -> the batch
 	// completes. Each catch TATTLES (ps5_fault) so a clean run is PROVEN (the trigger fired + got
 	// healed), never luck. Lab-only (gated on rpcs3-strand-watchdog.txt); the bow gets Fix A+B only.
+	// lab: the full-LS wedge dump. The freezes all end the same way: the kernels parked in the
+	// game's task wait (0x1c530-class) holding the workload, the fire never sent. The guest's
+	// OWN code decides that - and the 16KB kpark dump missed it all (the task code lives ABOVE
+	// 0x4000: the claim/done loop at 0x1cf70-0x1d178, the park at 0x1c530, the signal stub at
+	// 0x24a90). On the first freeze-shaped census, lift ALL SPURS kernels' FULL local storage
+	// (256KB each) + the kernel contexts (wklLocContention at LS 0x180 etc.) for offline disasm.
+	// One shot per boot - one freeze's worth answers the protocol question forever.
+	static bool ls_full_dumped = false;
+	if (!ls_full_dumped && main_pc == 0xb6fe14 && spu_pending_mfc >= 3)
+	{
+		ls_full_dumped = true;
+		if (FILE* f = std::fopen("/app0/spu-ls-full.bin", "wb"))
+		{
+			idm::select<named_thread<spu_thread>>([&](u32, spu_thread& spu)
+			{
+				if (std::string_view(spu.get_name()).find("CellSpursKernel") == std::string_view::npos) return;
+				char hdr[160];
+				std::snprintf(hdr, sizeof hdr, "\n===SPU %s pc 0x%x raddr 0x%x rtime %llu===\n", spu.get_name().c_str(), spu.pc, spu.raddr, static_cast<unsigned long long>(+spu.rtime));
+				std::fwrite(hdr, 1, std::strlen(hdr), f);
+				std::fwrite(spu._ptr<u8>(0), 1, 0x40000, f);
+			});
+			std::fclose(f);
+			trace("lab: FULL LS dump of the SPURS kernels -> /app0/spu-ls-full.bin (the guest task code + contexts at the freeze)");
+			ps5_fault("ls_dump_captured", "the SPURS kernels' full local storage lifted for offline disasm");
+		}
+	}
+
 	if (main_pc == 0xb6fe14)
 	{
 		static const bool strand_wd = fs::is_file("/app0/rpcs3-strand-watchdog.txt");
