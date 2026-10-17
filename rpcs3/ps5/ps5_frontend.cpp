@@ -976,13 +976,17 @@ void ps5_thread_census(u64 now, u64 gap_start)
 	// 0x5ad02e00 + the wait line 0x5ad02f80) - read the diverged counters in the act
 	if (vm::check_addr(0x5ad02e00, vm::page_readable, 64) && vm::check_addr(0x5ad02f80, vm::page_readable, 64))
 		fmt::append(detail, " | batch: claim[0] %08x %08x done[0] %08x %08x | wait[73] %02x", +vm::read32(0x5ad02e00), +vm::read32(0x5ad02e04), +vm::read32(0x5ad02e10), +vm::read32(0x5ad02e14), +vm::_ref<u8>(0x5ad02f80 + 0x73));
-	// lab: the queue-depth read - at a freeze, is the completion SITTING in main's queue
-	// (undelivered) or absent? The queue with a parked PPU waiter = main's. depth>0 with a
-	// waiter parked = the wake failed (the condvar); depth 0 = the completion never landed.
+	// lab: the reader-vs-target landscape (the delivery gap - the current frontier). The flight
+	// recorder showed the completion FIRES (pc 0x24a90) but DEAD-LETTERS into a queue with no
+	// reader (SEND-DEAD). At a freeze, enumerate EVERY event queue: its id + its parked PPU reader's
+	// thread-id (0 = nobody reading) + its backlog depth (an undrained completion = a dead letter)
+	// + its liveness. Which queues are main (0x1000000) + the relays (SpursHdlr1 0x1000007, JM Event
+	// Handler 0x1000009) ACTUALLY parked on? If they differ from the completion's target queue, the
+	// misroute/queue-generation desync is convicted - the kernel's port binding points at a stale
+	// queue while the relay waits on the live one.
 	idm::select<lv2_event_queue>([&](u32, lv2_event_queue& q)
 	{
-		if (q.pq) // a PPU thread parked on this queue
-			fmt::append(detail, " | queue 0x%x depth %u waiter-parked", q.id, static_cast<u32>(q.events.size()));
+		fmt::append(detail, " | q 0x%x rd 0x%x dp %u ex %d", q.id, q.pq ? q.pq->id : 0, static_cast<u32>(q.events.size()), q.exists ? 1 : 0);
 	});
 	if (main_pc == 0xb3a4c8)
 		ps5_fault("gpuhang_watchdog", detail); // the game's own gpu-hang trap
