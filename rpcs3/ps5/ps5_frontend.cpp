@@ -1071,6 +1071,33 @@ void ps5_thread_census(u64 now, u64 gap_start)
 			trace("lab: FULL LS dump of the SPURS kernels -> /app0/spu-ls-full.bin (the guest task code + contexts at the freeze)");
 			ps5_fault("ls_dump_captured", "the SPURS kernels' full local storage lifted for offline disasm");
 		}
+
+		// lab: the PPU-side code dump (one shot - the text is static). The freeze is a guest
+		// check-then-park race (the LS dump convicted the SPU side); main's phase-advance
+		// condition lives in the game's PPU job loop. Lift the game's code window (the job
+		// loop at 0xb6fe14, the caller at 0xe245ec, the SPURS PRX handlers at 0x104xxxxx) for
+		// offline PPU disasm - the protocol loop closes without another instrument round-trip.
+		static bool ppu_code_dumped = false;
+		if (!ppu_code_dumped)
+		{
+			ppu_code_dumped = true;
+			if (FILE* pf = std::fopen("/app0/ppu-code-dump.bin", "wb"))
+			{
+				const u32 base = 0x800000, top = 0x10800000; // file offset = addr - base
+				std::vector<u8> page(4096);
+				for (u32 a = base; a < top; a += 4096)
+				{
+					if (vm::check_addr(a, vm::page_readable, 4096))
+						std::memcpy(page.data(), vm::get_super_ptr<u8>(a), 4096);
+					else
+						std::memset(page.data(), 0, 4096);
+					std::fwrite(page.data(), 1, 4096, pf);
+				}
+				std::fclose(pf);
+				trace("lab: the game's PPU code window [0x800000,0x10800000) dumped -> /app0/ppu-code-dump.bin (main's job loop for offline disasm)");
+				ps5_fault("ppu_code_dumped", "the game code window lifted for PPU-side disasm (main's advance trigger)");
+			}
+		}
 	}
 
 	if (main_pc == 0xb6fe14)
