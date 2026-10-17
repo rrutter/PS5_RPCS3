@@ -984,7 +984,10 @@ void ps5_thread_census(u64 now, u64 gap_start)
 	// Handler 0x1000009) ACTUALLY parked on? If they differ from the completion's target queue, the
 	// misroute/queue-generation desync is convicted - the kernel's port binding points at a stale
 	// queue while the relay waits on the live one.
-	idm::select<lv2_event_queue>([&](u32, lv2_event_queue& q)
+	// CORRECTED (was a broken read): the event queues live under the TWO-LEVEL idm form
+	// (lv2_obj -> lv2_event_queue). The 1-level idm::select<lv2_event_queue> reads the wrong
+	// container and finds NOTHING - the 'orphaned queue' theory was built on that broken read.
+	idm::select<lv2_obj, lv2_event_queue>([&](u32, lv2_event_queue& q)
 	{
 		fmt::append(detail, " | q 0x%x rd 0x%x dp %u ex %d", q.id, q.pq ? q.pq->id : 0, static_cast<u32>(q.events.size()), q.exists ? 1 : 0);
 	});
