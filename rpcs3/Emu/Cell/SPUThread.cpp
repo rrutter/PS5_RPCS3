@@ -6404,6 +6404,14 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 		if (fs::is_file("/app0/spurs-signal-trace.txt"))
 			spu_log.notice("[signal-trace] %s OutIntrMbox <- 0x%08x (pc 0x%05x)", get_name(), value, pc);
 
+		// lab: the flight recorder - record EVERY SPURS-kernel outbound completion signal at the
+		// dispatch top (send_event / throw_event / event-flag-set ALL flow through WrOutIntrMbox).
+		// kind 4. So the ring shows whether the last batch's completion fire was EVER ATTEMPTED (and
+		// via which door) - the systematic elimination of 'the fire never happens' vs 'fires but the
+		// delivery fails'. The game's batch kernels only (name CellSpursKernel; FMOD excluded).
+		if (std::string_view(get_name()).find("CellSpursKernel") != std::string_view::npos)
+			ps5_trail_rec(*this, static_cast<u32>(value >> 24), 4u, static_cast<u64>(value & 0xffffffu));
+
 		if (get_type() >= spu_type::raw)
 		{
 			if (state & cpu_flag::pending)
@@ -6480,14 +6488,9 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 				const auto res = !queue ? CELL_ENOTCONN :
 					queue->send(SYS_SPU_THREAD_EVENT_USER_KEY, lv2_id, (u64{spup} << 32) | (value & 0x00ffffff), data);
 
-				// lab: the flight recorder - the batch completion fire, the GAME's kernels only (name
-				// CellSpursKernel - FMOD's audio sends flooded the ring AND the dead-letter tattle false-
-				// positived on FMOD 33810x with a file-write per fire = the unplayable I/O storm). PASSIVE
-				// now (the ring, no per-send file write). kind 2 = a reader's parked (delivered), kind 3 =
-				// NO reader parked (the dead letter - the fire landed in a queue nobody's reading). addr =
-				// the target queue id. The freeze's delivery gap, read off the ring at the freeze.
-				if (queue && std::string_view(get_name()).find("CellSpursKernel") != std::string_view::npos)
-					ps5_trail_rec(*this, queue->id, queue->pq ? 2u : 3u, static_cast<u64>(data));
+				// (the send fire is recorded at the WrOutIntrMbox dispatch top, kind 4 - one record per
+				// signal, all mechanisms, no double-count. The delivery is read off the queue landscape
+				// at the freeze: does the completion's target queue have a reader / a drained backlog?)
 
 				if (res == CELL_ENOTCONN)
 				{
