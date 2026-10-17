@@ -107,7 +107,7 @@ extern atomic_t<u64> g_ps5_batch_fail_cont; // ...failed on a moved stamp (real 
 extern atomic_t<u64> g_ps5_batch_fail_spu;  // ...failed on an UNCHANGED stamp (the damning atomicity bug)
 extern atomic_t<u64> g_ps5_backoff_parks;   // SPUThread.cpp: the escalating PUTLLC-failure park engagements
 // the flight recorder (identical def to SPUThread.cpp - ODR-legal, token-identical)
-struct ps5_trail_t { u64 seq; u32 kernel; u32 pc; u32 addr; u32 kind; u64 rtime; };
+struct ps5_trail_t { u64 seq; u64 rtime; u32 kernel; u32 pc; u32 addr; u32 kind; u32 repeats; };
 extern ps5_trail_t g_ps5_trail[32];         // SPUThread.cpp: the last-32-SPURS-ops ring
 extern atomic_t<u64> g_ps5_trail_seq;       // ...its write cursor
 extern atomic_t<u64> g_ps5_frames_generated; // VKFrameGen.cpp: frames made between the game's
@@ -1063,8 +1063,8 @@ void ps5_thread_census(u64 now, u64 gap_start)
 		{
 			const auto& e = g_ps5_trail[s & 31];
 			if (e.seq != s) continue; // a slot not written this wrap
-			fmt::append(out, "         #%llu K%u pc 0x%x %s 0x%x rtime %llu\n", e.seq, e.kernel, e.pc,
-				e.kind == 2 ? "SEND " : (e.kind == 1 ? "PUT-OK " : "PUT-FAIL"), e.addr, e.rtime);
+			fmt::append(out, "         #%llu K%u pc 0x%x %s 0x%x rtime %llu x%u\n", e.seq, e.kernel, e.pc,
+				e.kind == 2 ? "SEND " : (e.kind == 1 ? "PUT-OK " : "PUT-FAIL"), e.addr, e.rtime, e.repeats);
 		}
 	}
 

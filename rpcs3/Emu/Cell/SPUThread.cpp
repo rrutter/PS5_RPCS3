@@ -75,9 +75,31 @@ atomic_t<u64> g_ps5_backoff_parks{}; // lab: how many times the escalating PUTLL
 // at a freeze = the actions that did/didn't complete - the one that never completed names the culprit.
 // kind: 0=putllc-fail 1=putllc-ok 2=completion-send. The current instruments see the FROZEN state;
 // this sees the SEQUENCE that led to it.
-struct ps5_trail_t { u64 seq; u32 kernel; u32 pc; u32 addr; u32 kind; u64 rtime; };
+struct ps5_trail_t { u64 seq; u64 rtime; u32 kernel; u32 pc; u32 addr; u32 kind; u32 repeats; };
 ps5_trail_t g_ps5_trail[32]{};
 atomic_t<u64> g_ps5_trail_seq{};
+
+// lab: the flight-recorder write, with the user's dedup - a run of the SAME op (kernel/pc/addr/
+// kind) collapses into a repeat count instead of flooding the ring, so a flood (FMOD's audio sends,
+// or a kernel's storm retries) can't shove the real sequence out the back. The tail stays the
+// DISTINCT ops + how many times each repeated.
+static void ps5_trail_rec(spu_thread& spu, u32 addr, u32 kind, u64 rtime)
+{
+	const u64 nxt = g_ps5_trail_seq.load();
+	if (nxt)
+	{
+		auto& last = g_ps5_trail[(nxt - 1) & 31];
+		if (last.seq == nxt - 1 && last.kernel == spu.index && last.pc == spu.pc && last.addr == addr && last.kind == kind)
+		{
+			last.repeats++;      // the same op again - bump the count, don't add a new line
+			last.rtime = rtime;  // keep the latest stamp
+			return;
+		}
+	}
+	const u64 s = g_ps5_trail_seq.raw()++;
+	auto& e = g_ps5_trail[s & 31];
+	e.seq = s; e.rtime = rtime; e.kernel = spu.index; e.pc = spu.pc; e.addr = addr; e.kind = kind; e.repeats = 1;
+}
 atomic_t<u64> g_ps5_writerlock_us{}; // total us spent in vm::writer_lock (vm.cpp)
 atomic_t<u64> g_ps5_writerlock_n{};  // ...across this many claims
 #endif
@@ -3705,14 +3727,9 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 	}
 
 	// lab: the flight recorder - record every SPURS-line PUTLLC (the batch claim/done line
-	// 0x5ad02e00 + the SPURS instance 0x5631a300) into the ring. The tail at a freeze = the last
-	// actions; the one that never completed names the culprit. (the user's LAST-ACTION black box)
+	// 0x5ad02e00 + the SPURS instance 0x5631a300) into the ring (dedup'd via ps5_trail_rec).
 	if (((addr - 0x5ad02e00u) < 0x300u) || ((addr - 0x5631a000u) < 0x1000u))
-	{
-		const u64 s = g_ps5_trail_seq.raw()++;
-		auto& e = g_ps5_trail[s & 31];
-		e.seq = s; e.kernel = index; e.pc = pc; e.addr = addr; e.kind = putllc_ok ? 1u : 0u; e.rtime = rtime;
-	}
+		ps5_trail_rec(*this, addr, putllc_ok ? 1u : 0u, rtime);
 
 	if (putllc_ok)
 	{
@@ -6463,14 +6480,10 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 				const auto res = !queue ? CELL_ENOTCONN :
 					queue->send(SYS_SPU_THREAD_EVENT_USER_KEY, lv2_id, (u64{spup} << 32) | (value & 0x00ffffff), data);
 
-				// lab: the flight recorder - the completion SEND (the batch's fire). kind=2. If the ring's
-				// tail at a freeze is all claims/dones with no fire after the last done -> the completion
-				// never came (the lost done-post starved the last-finisher).
-				{
-					const u64 s = g_ps5_trail_seq.raw()++;
-					auto& e = g_ps5_trail[s & 31];
-					e.seq = s; e.kernel = index; e.pc = pc; e.addr = spup; e.kind = 2u; e.rtime = static_cast<u64>(data);
-				}
+				// lab: the flight recorder - the completion SEND (the batch's fire). kind=2. SPURS kernels
+				// only (spurs_addr set) - FMOD's audio sends flooded the ring and hid the sequence (the tape
+				// showed 32 identical non-SPURS sends). Dedup'd via ps5_trail_rec.
+				if (spurs_addr) ps5_trail_rec(*this, spup, 2u, static_cast<u64>(data));
 
 				if (res == CELL_ENOTCONN)
 				{
