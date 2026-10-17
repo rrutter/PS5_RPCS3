@@ -6480,21 +6480,14 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 				const auto res = !queue ? CELL_ENOTCONN :
 					queue->send(SYS_SPU_THREAD_EVENT_USER_KEY, lv2_id, (u64{spup} << 32) | (value & 0x00ffffff), data);
 
-				// lab: the flight recorder - the completion SEND (the batch's fire). kind=2. SPURS kernels
-				// only (spurs_addr set) - FMOD's audio sends flooded the ring and hid the sequence (the tape
-				// showed 32 identical non-SPURS sends). Dedup'd via ps5_trail_rec.
-				if (spurs_addr) ps5_trail_rec(*this, spup, 2u, static_cast<u64>(data));
-
-				// lab: the dead-letter tattle (the delivery gap - the freeze's current frontier). The black
-				// box showed the completion FIRES but main_sig 0 (main never woken) and the relay threads
-				// (SpursHdlr1 / Job Manager Event Handler) are parked WAITING - so the fire never reached a
-				// reader. If the target queue has NO parked PPU reader, the completion landed in a queue
-				// nobody's reading = the dead letter. Caught in the act + names the queue.
-				if (spurs_addr && queue && !queue->pq)
-				{
-					extern void ps5_fault(const char*, const std::string&);
-					ps5_fault("completion_dead_letter", fmt::format("kernel %s fired to queue 0x%x spup %u with NO reader parked (alive %d) - the fire landed where nobody's reading", get_name(), queue->id, spup, queue->exists ? 1 : 0));
-				}
+				// lab: the flight recorder - the batch completion fire, the GAME's kernels only (name
+				// CellSpursKernel - FMOD's audio sends flooded the ring AND the dead-letter tattle false-
+				// positived on FMOD 33810x with a file-write per fire = the unplayable I/O storm). PASSIVE
+				// now (the ring, no per-send file write). kind 2 = a reader's parked (delivered), kind 3 =
+				// NO reader parked (the dead letter - the fire landed in a queue nobody's reading). addr =
+				// the target queue id. The freeze's delivery gap, read off the ring at the freeze.
+				if (queue && std::string_view(get_name()).find("CellSpursKernel") != std::string_view::npos)
+					ps5_trail_rec(*this, queue->id, queue->pq ? 2u : 3u, static_cast<u64>(data));
 
 				if (res == CELL_ENOTCONN)
 				{

@@ -1064,7 +1064,7 @@ void ps5_thread_census(u64 now, u64 gap_start)
 			const auto& e = g_ps5_trail[s & 31];
 			if (e.seq != s) continue; // a slot not written this wrap
 			fmt::append(out, "         #%llu K%u pc 0x%x %s 0x%x rtime %llu x%u\n", e.seq, e.kernel, e.pc,
-				e.kind == 2 ? "SEND " : (e.kind == 1 ? "PUT-OK " : "PUT-FAIL"), e.addr, e.rtime, e.repeats);
+				e.kind == 3 ? "SEND-DEAD " : (e.kind == 2 ? "SEND " : (e.kind == 1 ? "PUT-OK " : "PUT-FAIL")), e.addr, e.rtime, e.repeats);
 		}
 	}
 
