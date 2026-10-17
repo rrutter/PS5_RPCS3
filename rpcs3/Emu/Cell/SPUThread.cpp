@@ -89,6 +89,40 @@ struct ps5_batchw_t { u64 seq; u64 rtime; u32 kernel; u32 pc; u32 addr; u32 lane
 ps5_batchw_t g_ps5_batchw[24]{};
 atomic_t<u64> g_ps5_batchw_seq{};
 
+// lab: the arrival-fair claim gate (swarm r2's structural fix - the contention-collapse cure,
+// the STORM species). The scrum: 5 kernels in a free-for-all on one reservation line, the winner
+// emerging by LUCK at ~1M collisions/s - the guest's own claim loop has zero backoff (LS-disasm
+// proven: PUTLLC -> brnz straight back), and hardware's bus is FIFO-ish so it never sees this.
+// The gate restores the hardware property: the first contender to fail repeatedly on a hot line
+// TAKES the line's turn and retries alone (a clear window -> its claim lands); the rest park on
+// the line's notifier (cheap) until the commit wakes them. One winner, bounded time, losers cheap
+// and rare - exactly what the guest protocol assumes. Gated on rpcs3-claim-fair.txt; the bow stays
+// naive. Guest-visible semantics unchanged (PUTLLC success/failure stays truthful - only the
+// SCHEDULE of who wins changes). Backstops: a 200us park cap (no permanent park) and a 2ms
+// heartbeat-stale force-release (a teardown mid-hold can't leak the turn).
+struct ps5_claim_gate_t { atomic_t<u32> addr{0}; atomic_t<u32> held{0}; atomic_t<u64> beat{0}; };
+ps5_claim_gate_t g_ps5_claim_gates[8]{};
+atomic_t<u64> g_ps5_gate_parks{};   // contenders parked out of the winner's window (the thinning proof)
+atomic_t<u64> g_ps5_gate_forced{};  // heartbeat-stale force-releases (the leak backstop firing - watch it)
+
+static ps5_claim_gate_t* ps5_claim_gate_find(u32 addr, bool create)
+{
+	ps5_claim_gate_t* empty = nullptr;
+	for (auto& g : g_ps5_claim_gates)
+	{
+		const u32 a = g.addr.load();
+		if (a == addr) return &g;
+		if (!a && !empty) empty = &g;
+	}
+	if (create && empty && empty->addr.compare_and_swap_test(0, addr)) return empty;
+	return nullptr;
+}
+
+static void ps5_claim_gate_heartbeat(u32 addr)
+{
+	if (auto* g = ps5_claim_gate_find(addr, false)) g->beat = get_system_time();
+}
+
 // lab: the flight-recorder write, with the user's dedup - a run of the SAME op (kernel/pc/addr/
 // kind) collapses into a repeat count instead of flooding the ring, so a flood (FMOD's audio sends,
 // or a kernel's storm retries) can't shove the real sequence out the back. The tail stays the
@@ -3784,6 +3818,14 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 			raddr = 0;
 		}
 
+		// lab: the fair gate - a winner releases the hot line's turn (the commit's own
+		// notify below wakes the next parked contender into its now-clear window)
+		if (ps5_gate_line && ps5_gate_line == addr)
+		{
+			ps5_gate_line = 0;
+			if (auto* g = ps5_claim_gate_find(addr, false)) g->held.raw() = 0;
+		}
+
 		perf0.reset();
 		ps5_putllc_fail_streak = 0; // lab: a landed done-post resets the backoff streak
 		return true;
@@ -3823,7 +3865,46 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 		// storm is GLOBAL line contention - no one kernel fails 16 straight); this uses a low
 		// threshold so it actually fires, and g_ps5_backoff_parks proves it (measure twice).
 		static const bool s_backoff = fs::is_file("/app0/rpcs3-claim-backoff.txt");
-		if (s_backoff)
+		// lab: the arrival-fair claim gate (see the struct's comment) - SUPERSEDES the backoff
+		// when its flag is set (one mechanism under test per flight). Engage only on a line a
+		// kernel has streaked on (= genuinely hot); the first to streak takes the turn, the rest
+		// park on the line's notifier out of the winner's window.
+		static const bool s_fair = fs::is_file("/app0/rpcs3-claim-fair.txt");
+		if (s_fair && std::string_view(get_name()).find("CellSpursKernel") != std::string_view::npos)
+		{
+			const u32 streak = ++ps5_putllc_fail_streak;
+			if (ps5_gate_line == addr)
+			{
+				ps5_claim_gate_heartbeat(addr); // the holder's liveness stamp (the leak backstop)
+			}
+			else if (auto* g = ps5_claim_gate_find(addr, streak >= 4))
+			{
+				const u64 now = get_system_time();
+				if (!g->held.load())
+				{
+					if (g->held.compare_and_swap_test(0, 1)) { ps5_gate_line = addr; g->beat.raw() = now; }
+				}
+				else if (now - g->beat.load() > 2000)
+				{
+					// the holder's heartbeat is stale (a teardown/give-up leak): force-release + take
+					g_ps5_gate_forced.raw()++;
+					g->held.raw() = 0;
+					if (g->held.compare_and_swap_test(0, 1)) { ps5_gate_line = addr; g->beat.raw() = now; }
+				}
+				else
+				{
+					// someone's mid-claim on this line: park on the notifier until their commit wakes
+					// us (or the cap) - losers go cheap+rare+out of the winner's window
+					g_ps5_gate_parks.raw()++;
+					if (auto [wait_var, flag_val] = vm::reservation_notifier_begin_wait(addr, +vm::reservation_acquire(addr)); wait_var)
+					{
+						utils::bless<atomic_t<u32>>(&wait_var->raw().wait_flag)->wait(flag_val, atomic_wait_timeout{200'000});
+						vm::reservation_notifier_end_wait(*wait_var);
+					}
+				}
+			}
+		}
+		else if (s_backoff)
 		{
 			const u32 streak = ++ps5_putllc_fail_streak;
 			if (streak >= 6)

@@ -713,6 +713,7 @@ public:
 	alignas(64) std::byte rdata[128]{};
 	u32 raddr = 0;
 	u32 ps5_putllc_fail_streak = 0; // lab: consecutive PUTLLC contention failures (the escalating backoff)
+	u32 ps5_gate_line = 0;          // lab: the hot line this thread holds the claim turn on (0 = none)
 	const decltype(rdata)* resrv_mem{};
 
 	// Range Lock pointer

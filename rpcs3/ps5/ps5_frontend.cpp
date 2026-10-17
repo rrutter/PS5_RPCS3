@@ -116,6 +116,8 @@ extern ps5_batchw_t g_ps5_batchw[24];       // SPUThread.cpp: the batch-region w
 extern atomic_t<u64> g_ps5_batchw_seq;      // ...its write cursor
 extern atomic_t<u64> g_ps5_pin_kernel;      // Thread.cpp: threads seated on the exclusive SPURS kernel set
 extern atomic_t<u64> g_ps5_pin_house;       // ...and on the house set (the scheduling contract)
+extern atomic_t<u64> g_ps5_gate_parks;      // SPUThread.cpp: contenders parked out of the winner's window
+extern atomic_t<u64> g_ps5_gate_forced;     // ...the heartbeat-stale force-releases (the leak backstop)
 // the queue-traffic watch (identical def to sys_event.cpp - ODR-legal, token-identical)
 struct ps5_qop_t { u64 seq; u32 qid; u32 op; u32 who; u32 d0; u32 d1; u32 d2; };
 extern ps5_qop_t g_ps5_qops[64];            // sys_event.cpp: the cascade send/receive/park ring
@@ -983,7 +985,7 @@ void ps5_thread_census(u64 now, u64 gap_start)
 	// the claim's success/failure split + the writer_lock safepoint's avg cost (the
 	// root-fix premises, measured): pure livelock = 0 ok, and whether the safepoint dominates
 	const u64 wn = g_ps5_writerlock_n.load();
-	std::string detail = fmt::format("rsx_op %u core %d main 0x%x spu_run %d claim %llu/s pend_mfc %d | claimok %llu fail %llu | writerlock %lluus/claim | heal %llu main_sig %u | batch ok %llu cont %llu spu %llu | parks %llu | pin k%llu h%llu", rsx_op, g_ps5_rsx_core.load(), main_pc, spu_run, claim_rate, spu_pending_mfc, g_ps5_putllc_ok.load(), g_ps5_putllc_fail.load(), wn ? g_ps5_writerlock_us.load() / wn : 0, g_ps5_lost_wake_heal.load(), main_sig, g_ps5_batch_ok.load(), g_ps5_batch_fail_cont.load(), g_ps5_batch_fail_spu.load(), g_ps5_backoff_parks.load(), g_ps5_pin_kernel.load(), g_ps5_pin_house.load());
+	std::string detail = fmt::format("rsx_op %u core %d main 0x%x spu_run %d claim %llu/s pend_mfc %d | claimok %llu fail %llu | writerlock %lluus/claim | heal %llu main_sig %u | batch ok %llu cont %llu spu %llu | parks %llu | pin k%llu h%llu | gate p%llu f%llu", rsx_op, g_ps5_rsx_core.load(), main_pc, spu_run, claim_rate, spu_pending_mfc, g_ps5_putllc_ok.load(), g_ps5_putllc_fail.load(), wn ? g_ps5_writerlock_us.load() / wn : 0, g_ps5_lost_wake_heal.load(), main_sig, g_ps5_batch_ok.load(), g_ps5_batch_fail_cont.load(), g_ps5_batch_fail_spu.load(), g_ps5_backoff_parks.load(), g_ps5_pin_kernel.load(), g_ps5_pin_house.load(), g_ps5_gate_parks.load(), g_ps5_gate_forced.load());
 	// lab: the batch's accounting lines at the frozen moment (the claim/done line
 	// 0x5ad02e00 + the wait line 0x5ad02f80) - read the diverged counters in the act
 	if (vm::check_addr(0x5ad02e00, vm::page_readable, 64) && vm::check_addr(0x5ad02f80, vm::page_readable, 64))
