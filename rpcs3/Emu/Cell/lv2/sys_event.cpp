@@ -159,6 +159,9 @@ static bool ps5_qwatch_has(u32 qid)
 
 static void ps5_qop_rec(u32 qid, u32 op, u32 who, u32 d0, u32 d1, u32 d2)
 {
+	extern bool ps5_instruments_on(); // SPUThread.cpp
+	if (!ps5_instruments_on()) return; // lab: lean mode
+
 	const u64 s = g_ps5_qops_seq.raw()++;
 	auto& e = g_ps5_qops[s % 64];
 	e.seq = s; e.qid = qid; e.op = op; e.who = who; e.d0 = d0; e.d1 = d1; e.d2 = d2;

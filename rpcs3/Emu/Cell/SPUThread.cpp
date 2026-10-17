@@ -89,6 +89,18 @@ struct ps5_batchw_t { u64 seq; u64 rtime; u32 kernel; u32 pc; u32 addr; u32 lane
 ps5_batchw_t g_ps5_batchw[24]{};
 atomic_t<u64> g_ps5_batchw_seq{};
 
+// lab: the lean-mode master switch (/app0/rpcs3-instruments.txt). PRESENT = the full hunt rack
+// (the per-op recorders + the contended telemetry counters - the microscopes that compound the
+// slideshow). ABSENT = the lean play build: the per-op microscopes skip their work while the
+// rare-fire, cheap pieces stay always-on (the fault pointer + census self-name the species; the
+// LS/PPU dumps still catch a freeze). The fully-instrumented build is archived at branch
+// lab-instrumented; the play build shouldn't pay for the hunt.
+bool ps5_instruments_on()
+{
+	static const bool on = fs::is_file("/app0/rpcs3-instruments.txt");
+	return on;
+}
+
 // lab: the arrival-fair claim gate (swarm r2's structural fix - the contention-collapse cure,
 // the STORM species). The scrum: 5 kernels in a free-for-all on one reservation line, the winner
 // emerging by LUCK at ~1M collisions/s - the guest's own claim loop has zero backoff (LS-disasm
@@ -129,6 +141,8 @@ static void ps5_claim_gate_heartbeat(u32 addr)
 // DISTINCT ops + how many times each repeated.
 static void ps5_trail_rec(spu_thread& spu, u32 addr, u32 kind, u64 rtime)
 {
+	if (!ps5_instruments_on()) return; // lab: lean mode
+
 	const u64 nxt = g_ps5_trail_seq.load();
 	if (nxt)
 	{
@@ -3763,7 +3777,7 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 
 	// lab: the batch-line done-post outcome - the freeze discriminator. A failed done-post on a
 	// MOVED line-stamp = real contention (the storm); on an UNCHANGED stamp = the damning bug.
-	if ((addr - 0x5ad02e00u) < 0x300u)
+	if (ps5_instruments_on() && (addr - 0x5ad02e00u) < 0x300u) // lab: lean mode gates the telemetry
 	{
 		if (putllc_ok) g_ps5_batch_ok.raw()++;
 		else if (((+vm::reservation_acquire(addr)) & -128) != (rtime & -128)) g_ps5_batch_fail_cont.raw()++;
@@ -3773,7 +3787,7 @@ bool spu_thread::do_putllc(const spu_mfc_cmd& args)
 	// lab: the finisher watch - a LANDED write on a batch region (or the sibling channel's)
 	// records WHICH 16-byte lane moved, old->new. Success only (a failed PUTLLC moves nothing);
 	// a content-identical writeback moves no lane and records nothing by construction.
-	if (putllc_ok && ((addr - 0x5ad02e00u) < 0x300u || (addr - 0x1038ec00u) < 0x300u))
+	if (ps5_instruments_on() && putllc_ok && ((addr - 0x5ad02e00u) < 0x300u || (addr - 0x1038ec00u) < 0x300u)) // lab: lean mode gates the finisher watch
 	{
 		const std::byte* nw = _ref<spu_rdata_t>(args.lsa & 0x3ff80);
 		for (u32 lane = 0; lane < 8; lane++)
@@ -5158,7 +5172,7 @@ bool spu_thread::process_mfc_cmd()
 		if (do_putllc(ch_mfc_cmd))
 		{
 			ch_atomic_stat.set_value(MFC_PUTLLC_SUCCESS);
-			g_ps5_putllc_ok.raw()++; // lab: the claim's success side (the cancer's nature probe)
+			if (ps5_instruments_on()) g_ps5_putllc_ok.raw()++; // lab: the claim's success side (lean-gated)
 			putllc_fail_count = 0; // lab: a landed claim resets the storm streak
 			getllar_storm_count = 0; // lab: ...and the re-read storm's streak
 
@@ -5213,7 +5227,7 @@ bool spu_thread::process_mfc_cmd()
 		else
 		{
 			ch_atomic_stat.set_value(MFC_PUTLLC_FAILURE);
-			g_ps5_putllc_fail.raw()++; // lab: the claim's failure side (the cancer's nature probe)
+			if (ps5_instruments_on()) g_ps5_putllc_fail.raw()++; // lab: the claim's failure side (lean-gated)
 
 			// lab: the PUTLLC failure-streak instrument (flag /app0/rpcs3-putllc-storm.txt).
 			// Illuminates the contention collapse's failure cadence - how many consecutive
