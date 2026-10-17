@@ -6485,6 +6485,17 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 				// showed 32 identical non-SPURS sends). Dedup'd via ps5_trail_rec.
 				if (spurs_addr) ps5_trail_rec(*this, spup, 2u, static_cast<u64>(data));
 
+				// lab: the dead-letter tattle (the delivery gap - the freeze's current frontier). The black
+				// box showed the completion FIRES but main_sig 0 (main never woken) and the relay threads
+				// (SpursHdlr1 / Job Manager Event Handler) are parked WAITING - so the fire never reached a
+				// reader. If the target queue has NO parked PPU reader, the completion landed in a queue
+				// nobody's reading = the dead letter. Caught in the act + names the queue.
+				if (spurs_addr && queue && !queue->pq)
+				{
+					extern void ps5_fault(const char*, const std::string&);
+					ps5_fault("completion_dead_letter", fmt::format("kernel %s fired to queue 0x%x spup %u with NO reader parked (alive %d) - the fire landed where nobody's reading", get_name(), queue->id, spup, queue->exists ? 1 : 0));
+				}
+
 				if (res == CELL_ENOTCONN)
 				{
 					spu_log.warning("sys_spu_thread_send_event(spup=%d, data0=0x%x, data1=0x%x): error (%s)", spup, (value & 0x00ffffff), data, res);
