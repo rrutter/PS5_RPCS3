@@ -937,6 +937,7 @@ void ps5_thread_census(u64 now, u64 gap_start)
 	// collect the species-tells for the fault classifier while we list the threads
 	u32 main_pc = 0;
 	u32 main_sig = 0; // lab: was a wake SIGNALED to main while it sits parked? (the lost-wake tell)
+	u64 main_gpr27 = 0, main_gpr28 = 0, main_gpr31 = 0; // lab: main's job-loop regs (r27=ctx r28=node r31=book - the species-2 deficit read)
 	int spu_run = 0, spu_claimpc = 0, spu_pending_mfc = 0;
 	const auto census = [&](const char* kind, auto& thr, u32 pc)
 	{
@@ -945,7 +946,7 @@ void ps5_thread_census(u64 now, u64 gap_start)
 	idm::select<named_thread<ppu_thread>>([&](u32, ppu_thread& ppu)
 	{
 		census("PPU", ppu, ppu.cia);
-		if (ppu.id == 0x1000000) { main_pc = ppu.cia; main_sig = (ppu.state & cpu_flag::signal) ? 1 : 0; } // signal set but parked = a wake was sent + lost
+		if (ppu.id == 0x1000000) { main_pc = ppu.cia; main_sig = (ppu.state & cpu_flag::signal) ? 1 : 0; main_gpr27 = ppu.gpr[27]; main_gpr28 = ppu.gpr[28]; main_gpr31 = ppu.gpr[31]; } // signal set but parked = a wake was sent + lost
 	});
 	idm::select<named_thread<spu_thread>>([&](u32, spu_thread& spu)
 	{
@@ -1104,6 +1105,34 @@ void ps5_thread_census(u64 now, u64 gap_start)
 
 	if (main_pc == 0xb6fe14)
 	{
+		// lab: the species-2 DEFICIT read - the job-graph state dump at the freeze (the crux, named).
+		// The PPU disasm (tmp/ppudis.py) pins main's job-loop regs, ALL callee-saved, so the blocked
+		// thread's saved gprs ARE the live values (NO register archaeology): r28 = the current
+		// job-channel node, r31 = the receive bookkeeping object (r31->4 = a packed (waiters:pending)
+		// counter ptr, r31->0xc = the event queue id), r27 = the scheduler ctx (r27->0x4c = the book
+		// obj). The node's counters (the loop at 0xe244c0 reads 0x00/0x04/0x1c/0x30/0x44/0x58; the
+		// drain predicate at 0xe2453c sums 0x1c+0x30+0x44+0x58 vs 0) name the EXACT deficit: WHICH
+		// work-class never completed + HOW SHORT main is. inflight ~1-2 = a single lost completion
+		// fire (a truthful fix may exist); deep = the game's ordering race for certain (accept/mitigate).
+		const u32 dnode = static_cast<u32>(main_gpr28);
+		const u32 dbook = static_cast<u32>(main_gpr31);
+		if (dnode && vm::check_addr(dnode, vm::page_readable, 0x60))
+		{
+			const u32 c00 = +vm::read32(dnode + 0x00), c04 = +vm::read32(dnode + 0x04);
+			const u32 c1c = +vm::read32(dnode + 0x1c), c30 = +vm::read32(dnode + 0x30);
+			const u32 c44 = +vm::read32(dnode + 0x44), c58 = +vm::read32(dnode + 0x58);
+			const u32 pending = c1c + c30, inflight = c44 + c58;
+			fmt::append(out, "       DEFICIT node 0x%x {entries %u posted %u | pending(1c+30) %u | inflight(44+58) %u | total %u}%s\n",
+				dnode, c00, c04, pending, inflight, pending + inflight,
+				inflight == 0 ? " DRAINED-yet-parked" : inflight <= 2 ? " SHORT-BY-A-HAIR (one lost fire)" : " DEEP (the game's race)");
+		}
+		if (dbook && vm::check_addr(dbook, vm::page_readable, 0x10))
+		{
+			const u32 cntp = +vm::read32(dbook + 4), qid = +vm::read32(dbook + 0xc);
+			const u32 packed = (cntp && vm::check_addr(cntp, vm::page_readable, 4)) ? +vm::read32(cntp) : 0;
+			fmt::append(out, "       DEFICIT book 0x%x queue 0x%x packed 0x%x (waiters %u : pending %u)\n",
+				dbook, qid, packed, packed >> 16, packed & 0xffff);
+		}
 		static const bool strand_wd = fs::is_file("/app0/rpcs3-strand-watchdog.txt");
 		if (strand_wd)
 		{
