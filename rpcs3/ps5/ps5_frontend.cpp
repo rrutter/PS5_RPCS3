@@ -102,6 +102,8 @@ extern atomic_t<u64> g_ps5_putllc_fail;    // SPUThread.cpp: PUTLLC claim failur
 extern atomic_t<u64> g_ps5_writerlock_us;  // vm.cpp: total us in the writer_lock stop-the-world
 extern atomic_t<u64> g_ps5_writerlock_n;   // vm.cpp: ...across this many claims
 extern atomic_t<u64> g_ps5_wl_commits;     // lab: the heavyweight commit count (the SPU->PPU seam)
+extern atomic_t<u64> g_ps5_main_would_pause; // lab: times a running main was about to be paused (the premise)
+extern atomic_t<u64> g_ps5_foreman_freed;    // lab: times the free-foreman flag kept main responsive
 extern atomic_t<u64> g_ps5_lost_wake_heal; // atomic.cpp: lost condvar notifies self-healed by the bounded wait
 extern atomic_t<u64> g_ps5_batch_ok;        // SPUThread.cpp: batch-line done-post successes
 extern atomic_t<u64> g_ps5_batch_fail_cont; // ...failed on a moved stamp (real contention)
@@ -1686,7 +1688,7 @@ int run(const char* boot_path)
 							const u64 dt = now - s_seam_last; // us
 							const u64 rate = dt ? (c - s_c0) * 1000000ull / dt : 0; // stop-the-world commits/s
 							const u64 avg = (n > s_n0) ? (w - s_w0) / (n - s_n0) : 0; // avg safepoint us this window
-							trace("seam: %llu stop-world commits/s (over %llums) | total %llu | avg %lluus safepoint (every PPU incl. main paused)", rate, dt / 1000, c, avg);
+							trace("seam: %llu stop-world/s (over %llums) | total %llu | avg %lluus | main-paused %llu (freed %llu)", rate, dt / 1000, c, avg, g_ps5_main_would_pause.load(), g_ps5_foreman_freed.load());
 							s_seam_last = now; s_c0 = c; s_w0 = w; s_n0 = n;
 						}
 					}

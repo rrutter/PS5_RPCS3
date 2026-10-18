@@ -160,6 +160,8 @@ static void ps5_trail_rec(spu_thread& spu, u32 addr, u32 kind, u64 rtime)
 }
 atomic_t<u64> g_ps5_writerlock_us{}; // total us spent in vm::writer_lock (vm.cpp)
 atomic_t<u64> g_ps5_wl_commits{}; // lab: heavyweight writer_lock commits (the SPU->PPU stop-the-world seam count)
+atomic_t<u64> g_ps5_main_would_pause{}; // lab: times a RUNNING main was about to be paused by the safepoint (the premise)
+atomic_t<u64> g_ps5_foreman_freed{};    // lab: times the free-foreman flag kept main responsive
 atomic_t<u64> g_ps5_writerlock_n{};  // ...across this many claims
 #endif
 

@@ -29,6 +29,8 @@ extern bool is_memory_compatible_for_copy_from_executable_optimization(u32 addr,
 extern atomic_t<u64> g_ps5_writerlock_us;
 extern atomic_t<u64> g_ps5_writerlock_n;
 extern atomic_t<u64> g_ps5_wl_commits; // lab: the heavyweight commit count (the SPU->PPU stop-the-world seam)
+extern atomic_t<u64> g_ps5_main_would_pause; // lab: times a RUNNING main was about to be paused (the premise)
+extern atomic_t<u64> g_ps5_foreman_freed;    // lab: times the free-foreman flag kept main responsive
 #endif
 
 namespace vm
@@ -544,12 +546,25 @@ namespace vm
 		if (range_lock)
 		{
 			g_ps5_wl_commits.raw()++; // lab: a heavyweight commit = a PPU-wide stop-the-world (main the foreman included)
+			// lab: the free-foreman experiment flag (rpcs3-free-foreman.txt) - see the flag loop below
+			static const bool s_free_foreman = fs::is_file("/app0/rpcs3-free-foreman.txt");
 			perf_meter<"SUSPEND"_u64> perf0;
 
 			for (auto lock = g_locks.cbegin(), end = lock + g_cfg.core.ppu_threads; lock != end; lock++)
 			{
 				if (auto ptr = +*lock; ptr && ptr->state.none_of(cpu_flag::wait + cpu_flag::memory))
 				{
+					// lab: the seam hypothesis test. On hardware the PPU/SPU never halt each other over a
+					// memory op; our heavyweight PUTLLC pauses EVERY PPU thread incl. main (the game's own
+					// scheduler) on each commit. First COUNT how often a RUNNING main was about to be paused
+					// (the premise, always-on); then, if the free-foreman flag is set, keep main responsive
+					// (freed) so the rendezvous window stays hardware-tight. Others still pause (consistency
+					// for genuine line-sharers is preserved).
+					if (ptr->id == 0x1000000)
+					{
+						g_ps5_main_would_pause.raw()++; // the premise: a running main was about to be paused
+						if (s_free_foreman) { g_ps5_foreman_freed.raw()++; continue; }
+					}
 					ptr->state.test_and_set(cpu_flag::memory);
 				}
 			}
@@ -616,6 +631,7 @@ namespace vm
 			{
 				if (auto ptr = +*lock)
 				{
+					if (s_free_foreman && ptr->id == 0x1000000) continue; // lab: we didn't flag main - don't wait for it
 					while (!(ptr->state & cpu_flag::wait))
 					{
 						utils::pause();
