@@ -1106,6 +1106,12 @@ void ps5_thread_census(u64 now, u64 gap_start)
 		}
 	}
 
+	// lab: the knock-relay experiment's state (function-scope so the reset sees un-parked censuses)
+	static const bool knock_relay = fs::is_file("/app0/rpcs3-knock-relay.txt");
+	static int knock_park_streak = 0;
+	static bool knock_fired = false;
+	if (main_pc != 0xb6fe14) { knock_park_streak = 0; knock_fired = false; } // re-arm when main leaves the freeze pc
+
 	if (main_pc == 0xb6fe14)
 	{
 		// lab: the species-2 DEFICIT read - the job-graph state dump at the freeze (the crux, named).
@@ -1135,6 +1141,38 @@ void ps5_thread_census(u64 now, u64 gap_start)
 			const u32 packed = (cntp && vm::check_addr(cntp, vm::page_readable, 4)) ? +vm::read32(cntp) : 0;
 			fmt::append(out, "       DEFICIT book 0x%x queue 0x%x packed 0x%x (waiters %u : pending %u)\n",
 				dbook, qid, packed, packed >> 16, packed & 0xffff);
+		}
+
+		// lab: the KNOCK-RELAY experiment (the user's "relay the owed completion" idea, run as a
+		// controlled, tattled test - we ACCEPT a crash as data). The deficit: node->0x00 stuck at 1 =
+		// one owed phase-complete the guest's fire gate (brz r81) skipped when the count drained to 0.
+		// main's loop NEVER reads an event's payload (the disasm proves it re-checks counters on a
+		// wake), so a knock is a knock. On a SUSTAINED freeze (the 3rd consecutive park-census - never
+		// a transient), deliver ONE genuine-form completion event to the queue main's parked on, then
+		// the instruments read the aftermath: does node->0x00 move / does main advance / does it crash.
+		if (knock_relay)
+		{
+			knock_park_streak++;
+			if (knock_park_streak == 3 && !knock_fired)
+			{
+				knock_fired = true;
+				u32 target_qid = 0;
+				idm::select<lv2_obj, lv2_event_queue>([&](u32, lv2_event_queue& q)
+				{
+					if (!target_qid && q.exists && q.pq && q.pq->id == 0x1000000) target_qid = q.id;
+				});
+				if (target_qid)
+				{
+					if (const auto q = idm::get_unlocked<lv2_obj, lv2_event_queue>(target_qid))
+					{
+						// the per-job completion knock's exact form (KEY, the sender's lv2_id,
+						// (spup<<32)|data0, data) - the channel-A completion
+						const auto res = q->send(SYS_SPU_THREAD_EVENT_USER_KEY, 0x04000100, (2ull << 32) | 2, 0);
+						ps5_fault("knock_relay_fired", fmt::format("queue 0x%x node 0x%x book 0x%x", target_qid, static_cast<u32>(main_gpr28), static_cast<u32>(main_gpr31)));
+						trace("lab: KNOCK-RELAY fired a completion event into main's queue 0x%x", target_qid);
+					}
+				}
+			}
 		}
 		static const bool strand_wd = fs::is_file("/app0/rpcs3-strand-watchdog.txt");
 		if (strand_wd)
