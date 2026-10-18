@@ -159,6 +159,7 @@ static void ps5_trail_rec(spu_thread& spu, u32 addr, u32 kind, u64 rtime)
 	e.seq = s; e.rtime = rtime; e.kernel = spu.index; e.pc = spu.pc; e.addr = addr; e.kind = kind; e.repeats = 1;
 }
 atomic_t<u64> g_ps5_writerlock_us{}; // total us spent in vm::writer_lock (vm.cpp)
+atomic_t<u64> g_ps5_wl_commits{}; // lab: heavyweight writer_lock commits (the SPU->PPU stop-the-world seam count)
 atomic_t<u64> g_ps5_writerlock_n{};  // ...across this many claims
 #endif
 

@@ -28,6 +28,7 @@ extern bool is_memory_compatible_for_copy_from_executable_optimization(u32 addr,
 // lab: the writer_lock safepoint cost counters (defined in SPUThread.cpp) - global scope
 extern atomic_t<u64> g_ps5_writerlock_us;
 extern atomic_t<u64> g_ps5_writerlock_n;
+extern atomic_t<u64> g_ps5_wl_commits; // lab: the heavyweight commit count (the SPU->PPU stop-the-world seam)
 #endif
 
 namespace vm
@@ -470,7 +471,7 @@ namespace vm
 	struct wl_timer {
 		std::chrono::steady_clock::time_point t0;
 		bool on;
-		wl_timer() : on(fs::is_file("/app0/fs-slowlog.txt")) { if (on) t0 = std::chrono::steady_clock::now(); }
+		wl_timer() : on(fs::is_file("/app0/fs-slowlog.txt") || fs::is_file("/app0/rpcs3-seam.txt")) { if (on) t0 = std::chrono::steady_clock::now(); }
 		~wl_timer() { if (on) { const auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count(); ::g_ps5_writerlock_us.raw() += us; ::g_ps5_writerlock_n.raw()++; } }
 	};
 #endif
@@ -542,6 +543,7 @@ namespace vm
 
 		if (range_lock)
 		{
+			g_ps5_wl_commits.raw()++; // lab: a heavyweight commit = a PPU-wide stop-the-world (main the foreman included)
 			perf_meter<"SUSPEND"_u64> perf0;
 
 			for (auto lock = g_locks.cbegin(), end = lock + g_cfg.core.ppu_threads; lock != end; lock++)

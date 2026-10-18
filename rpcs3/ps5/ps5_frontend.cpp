@@ -101,6 +101,7 @@ extern atomic_t<u64> g_ps5_putllc_ok;      // SPUThread.cpp: PUTLLC claim succes
 extern atomic_t<u64> g_ps5_putllc_fail;    // SPUThread.cpp: PUTLLC claim failures
 extern atomic_t<u64> g_ps5_writerlock_us;  // vm.cpp: total us in the writer_lock stop-the-world
 extern atomic_t<u64> g_ps5_writerlock_n;   // vm.cpp: ...across this many claims
+extern atomic_t<u64> g_ps5_wl_commits;     // lab: the heavyweight commit count (the SPU->PPU seam)
 extern atomic_t<u64> g_ps5_lost_wake_heal; // atomic.cpp: lost condvar notifies self-healed by the bounded wait
 extern atomic_t<u64> g_ps5_batch_ok;        // SPUThread.cpp: batch-line done-post successes
 extern atomic_t<u64> g_ps5_batch_fail_cont; // ...failed on a moved stamp (real contention)
@@ -1671,6 +1672,22 @@ int run(const char* boot_path)
 						{
 							s_heal_seen = heal_now; s_heal_emit = now;
 							ps5_fault("lost_wake_heal_active", fmt::format("bounded wait absorbed %llu lost condvar notifies (self-healed, no freeze)", heal_now));
+						}
+					}
+					// lab: the SPU<->PPU seam meter (the Hardware-Search baseline). Every ~2s during play, the
+					// rate at which heavyweight PUTLLC commits stop the whole PPU world (main the foreman
+					// included) + the safepoint's acquisition cost. The pause-storm magnitude, live, under load.
+					{
+						static const bool s_seam = fs::is_file("/app0/rpcs3-seam.txt");
+						static u64 s_seam_last = 0, s_c0 = 0, s_w0 = 0, s_n0 = 0;
+						if (s_seam && now - s_seam_last > 2'000'000)
+						{
+							const u64 c = g_ps5_wl_commits.load(), w = g_ps5_writerlock_us.load(), n = g_ps5_writerlock_n.load();
+							const u64 dt = now - s_seam_last; // us
+							const u64 rate = dt ? (c - s_c0) * 1000000ull / dt : 0; // stop-the-world commits/s
+							const u64 avg = (n > s_n0) ? (w - s_w0) / (n - s_n0) : 0; // avg safepoint us this window
+							trace("seam: %llu stop-world commits/s (over %llums) | total %llu | avg %lluus safepoint (every PPU incl. main paused)", rate, dt / 1000, c, avg);
+							s_seam_last = now; s_c0 = c; s_w0 = w; s_n0 = n;
 						}
 					}
 					if (flips != last_flips)
