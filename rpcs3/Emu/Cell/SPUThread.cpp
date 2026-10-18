@@ -1602,6 +1602,16 @@ u32 g_spu_trail_pc[8][64]{};
 // theory: JIT'd kernels never take their event interrupt, so the scheduling
 // core (invisible to static analysis - interrupt-entered code!) never runs.
 std::atomic<u32> g_spu_int_entries[8]{};
+// lab: the decrementer/preemption probe (the OG+advisor convergence measurement). The theory under
+// test: the SPURS kernel recalls an overstaying task via the SPU decrementer tick (TM). cpu_work's
+// busy-check (which detects the decrementer underflow) only runs while the SPU thread EXECUTES - a
+// kernel parked in the host-side wait (0x1c530) never runs it, so on our box the tick can't fire
+// mid-park (hardware's timer fires regardless). If a kernel ARMS the decrementer + enables interrupts
+// but TM never fires, the preemption tick is dead on our box = the owned bug. If the kernel never
+// arms it, the kernel is purely cooperative and the theory dies clean. Decisive either way.
+std::atomic<u64> g_ps5_dec_arms{};   // SPU_WrDec writes by SPURS kernels (does it arm the timer?)
+std::atomic<u64> g_ps5_int_ens{};    // set_interrupt_status(true) by SPURS kernels (does it enable interrupts?)
+std::atomic<u64> g_ps5_tm_fires{};   // decrementer underflow (TM) events collected (does the tick fire?)
 
 // lab mega-trace (flag /app0/rpcs3-megatrace.txt): the ring of truth - every
 // interesting SPU op in sequence, dumped when a kernel parks. Floods by design.
@@ -5749,6 +5759,7 @@ retry:
 			// Set next event to the next time the decrementer underflows
 			ch_dec_start_timestamp -= res << 32;
 			collect |= SPU_EVENT_TM;
+			if (std::string_view(get_name()).find("CellSpursKernel") != std::string_view::npos) g_ps5_tm_fires++; // lab: the decrementer tick fired (TM collected)
 		}
 	}
 
@@ -5819,6 +5830,8 @@ void spu_thread::set_interrupt_status(bool enable)
 		}
 	}
 
+	// lab: does the SPURS kernel ever enable interrupts? (the preemption-recall theory's enable arm)
+	if (enable && std::string_view(get_name()).find("CellSpursKernel") != std::string_view::npos) g_ps5_int_ens++;
 	interrupts_enabled = enable;
 }
 
@@ -6913,6 +6926,7 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 		ch_dec_start_timestamp = get_timebased_time();
 		ch_dec_value = value;
 		is_dec_frozen = false;
+		if (std::string_view(get_name()).find("CellSpursKernel") != std::string_view::npos) g_ps5_dec_arms++; // lab: the SPURS kernel armed the decrementer (the preemption tick)
 		return true;
 	}
 

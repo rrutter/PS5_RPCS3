@@ -143,6 +143,9 @@ void ps5_fault(const char* code, const std::string& detail); // the fault pointe
 extern std::atomic<u32> g_spu_trail_idx[];
 extern u32 g_spu_trail_pc[][64];
 extern std::atomic<u32> g_spu_int_entries[];
+extern std::atomic<u64> g_ps5_dec_arms;   // lab: SPURS kernel decrementer arms (the preemption probe)
+extern std::atomic<u64> g_ps5_int_ens;    // lab: SPURS kernel interrupt enables
+extern std::atomic<u64> g_ps5_tm_fires;   // lab: SPURS kernel decrementer (TM) ticks that fired
 extern std::atomic<bool> g_spu_mega_armed;
 std::string spu_mega_dump_last(u32 n);
 std::string spu_mega_dump_since(u32 from);
@@ -1176,6 +1179,12 @@ void ps5_thread_census(u64 now, u64 gap_start)
 		for (u32 o = 0; o < 160; o += 4) fmt::append(out, " %08x", +vm::read32(0x5631a300 + o));
 		fmt::append(out, "\n");
 	}
+	// lab: the decrementer/preemption tallies (the OG+advisor probe). Does the SPURS kernel ARM the
+	// decrementer + ENABLE interrupts, and does the tick (TM) ever fire? dec_arms>0 & int_ens>0 &
+	// tm_fires==0 = the preemption tick is dead on our box (the owned bug). dec_arms==0 = the kernel
+	// is purely cooperative (the theory dies clean, cross it off + go to the spin-wait / HLE levers).
+	fmt::append(out, "       PREEMPT probe: dec_arms %llu int_ens %llu tm_fires %llu (armed-but-tm0 = the tick is dead)\n",
+		g_ps5_dec_arms.load(), g_ps5_int_ens.load(), g_ps5_tm_fires.load());
 	// lab: dump the flight recorder ring (the last 32 SPURS ops) in seq order, oldest->newest. The
 	// black box: the SEQUENCE of claims/dones/fires leading to the freeze - the op that never
 	// completed names the culprit (the user's LAST-ACTION idea). kind: putllc-ok/fail, SEND=the fire.
@@ -1985,14 +1994,19 @@ int run(const char* boot_path)
 								s_task_still[ix] = 0;
 							}
 						}
-						if (spus.size() < 640)
+						if (spus.size() < 1200)
 						{
 							// lab: mailbox occupancy + WHAT the thread waits on: tag mask vs tag
 							// completion, stall channel, reservation address, event bits. A task
 							// parked with tm!=0 and ts==0 starves on a DMA that never completes.
+							// + the preemption probe (the OG+advisor decrementer theory): ie=interrupts_enabled,
+							// evm=the event mask (is TM armed for interrupt?), dec=the decrementer (armed value /
+							// current / DUE!=underflowed-but-unfired = the tick was owed but never delivered).
 							const auto& mb = spu.ch_in_mbox.values.raw();
-							fmt::append(spus, " [%s pc 0x%x mb w%u/c%u tm %x ts %u ra %x ev %x int %u]", spu.get_name(), spu.pc, mb.waiting, mb.count,
-								spu.ch_tag_mask, spu.ch_tag_stat.get_count(), spu.raddr, spu.ch_events.load().events, +g_spu_int_entries[spu.index & 7]);
+							const auto decv = spu.read_dec();
+							fmt::append(spus, " [%s pc 0x%x mb w%u/c%u tm %x ts %u ra %x ev %x int %u ie%u evm %x dec a%u c%u%s fz%u]", spu.get_name(), spu.pc, mb.waiting, mb.count,
+								spu.ch_tag_mask, spu.ch_tag_stat.get_count(), spu.raddr, spu.ch_events.load().events, +g_spu_int_entries[spu.index & 7],
+								spu.interrupts_enabled ? 1 : 0, spu.ch_events.load().mask, spu.ch_dec_value, decv.first, decv.second ? " DUE!" : "", spu.is_dec_frozen ? 1 : 0);
 						}
 					});
 
