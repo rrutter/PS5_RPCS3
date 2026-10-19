@@ -1692,6 +1692,35 @@ int run(const char* boot_path)
 							s_seam_last = now; s_c0 = c; s_w0 = w; s_n0 = n;
 						}
 					}
+					// lab: the render seam meter (Hardware-Search) - the render<->CPU<->SPU timing triangle, live
+					// at ~250ms. The user's RSX-in-the-fold read: when the box crawls, WHO is the bottleneck -
+					// the GPU (gpu-seq stalls while main/SPU churn = GPU-bound), or the game logic (GPU idle while
+					// main/SPU rendezvous = the convicted freeze arena), or the RSX preempting main. Measured, not vibes.
+					{
+						static const bool s_rseam = fs::is_file("/app0/rpcs3-seam.txt");
+						static u64 s_r_last = 0, s_f0 = 0, s_g0 = 0, s_c0 = 0, s_gen0 = 0, s_pok0 = 0;
+						if (s_rseam && now - s_r_last > 250'000)
+						{
+							if (const auto render = rsx::get_current_renderer())
+							{
+								u64 gpu_seq = 0;
+								if (auto* q = radv_ps5_queue_get()) gpu_seq = radv_ps5_queue_poll(q);
+								const u64 flips = render->int_flip_index, c = g_ps5_wl_commits.load();
+								const u64 gen = +g_ps5_frames_generated, pok = g_ps5_putllc_ok.load();
+								const u64 dt = now - s_r_last; // us
+								u32 m_pc = 0; bool m_run = false;
+								idm::select<named_thread<ppu_thread>>([&](u32, ppu_thread& ppu){ if (ppu.id == 0x1000000) { m_pc = ppu.cia; m_run = is_running(ppu); } });
+								trace("rseam: %llufps +%llugen | gpu+%llu | GET %07x PUT %07x op%u c%d | main %s 0x%x | claim %llu/s wl %llu/s",
+									dt ? (flips - s_f0) * 1000000ull / dt : 0, gen - s_gen0,
+									gpu_seq - s_g0,
+									render->ctrl ? +render->ctrl->get : 0, render->ctrl ? +render->ctrl->put : 0, g_ps5_rsx_op.load(), g_ps5_rsx_core.load(),
+									m_run ? "RUN" : "park", m_pc,
+									dt ? (pok - s_pok0) * 1000000ull / dt : 0,
+									dt ? (c - s_c0) * 1000000ull / dt : 0);
+								s_r_last = now; s_f0 = flips; s_g0 = gpu_seq; s_c0 = c; s_gen0 = gen; s_pok0 = pok;
+							}
+						}
+					}
 					if (flips != last_flips)
 					{
 						if (last_flips && now - last_flip_time > 80'000)
