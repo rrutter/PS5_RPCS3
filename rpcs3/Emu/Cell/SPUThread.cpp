@@ -162,6 +162,7 @@ atomic_t<u64> g_ps5_writerlock_us{}; // total us spent in vm::writer_lock (vm.cp
 atomic_t<u64> g_ps5_wl_commits{}; // lab: heavyweight writer_lock commits (the SPU->PPU stop-the-world seam count)
 atomic_t<u64> g_ps5_main_would_pause{}; // lab: times a RUNNING main was about to be paused by the safepoint (the premise)
 atomic_t<u64> g_ps5_foreman_freed{};    // lab: times the free-foreman flag kept main responsive
+atomic_t<u64> g_ps5_spu_attack_slips{}; // lab: times the SPU attack preempted a kernel at the rendezvous
 atomic_t<u64> g_ps5_writerlock_n{};  // ...across this many claims
 #endif
 
@@ -5065,6 +5066,17 @@ bool spu_thread::process_mfc_cmd()
 		// Avoid logging useless commands if there is no reservation
 		const bool dump = g_cfg.core.mfc_debug && raddr;
 		g_ps5_mfc_claims[lv2_id % 64][1].raw()++; // lab: claim-probe
+
+		// lab: the SPU ATTACK (rpcs3-spu-attack.txt) - the rendezvous stressor. When a SPURS kernel is in
+		// the task fire/wait region (the phase-complete critical window, 0x1c300-0x1c540), YIELD to slip
+		// its check-then-fire timing - the box-drowning the rendezvous loses under, summoned on demand.
+		// A reproducible species-2 freeze at idle = the hunt's holy grail. Flag-gated; off = zero cost.
+		static const bool s_spu_attack = fs::is_file("/app0/rpcs3-spu-attack.txt");
+		if (s_spu_attack && spurs_addr != 0u - 0x80u && pc >= 0x1c300u && pc <= 0x1c540u)
+		{
+			g_ps5_spu_attack_slips.raw()++;
+			std::this_thread::yield(); // preempt the kernel right at the rendezvous window
+		}
 
 		const bool is_spurs_task_wait = pc == 0x11e4 && spurs_addr != 0u - 0x80u;
 

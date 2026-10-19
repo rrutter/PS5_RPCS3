@@ -104,6 +104,7 @@ extern atomic_t<u64> g_ps5_writerlock_n;   // vm.cpp: ...across this many claims
 extern atomic_t<u64> g_ps5_wl_commits;     // lab: the heavyweight commit count (the SPU->PPU seam)
 extern atomic_t<u64> g_ps5_main_would_pause; // lab: times a running main was about to be paused (the premise)
 extern atomic_t<u64> g_ps5_foreman_freed;    // lab: times the free-foreman flag kept main responsive
+extern atomic_t<u64> g_ps5_spu_attack_slips; // lab: times the SPU attack preempted a kernel at the rendezvous
 extern atomic_t<u64> g_ps5_lost_wake_heal; // atomic.cpp: lost condvar notifies self-healed by the bounded wait
 extern atomic_t<u64> g_ps5_batch_ok;        // SPUThread.cpp: batch-line done-post successes
 extern atomic_t<u64> g_ps5_batch_fail_cont; // ...failed on a moved stamp (real contention)
@@ -1710,13 +1711,14 @@ int run(const char* boot_path)
 								const u64 dt = now - s_r_last; // us
 								u32 m_pc = 0; bool m_run = false;
 								idm::select<named_thread<ppu_thread>>([&](u32, ppu_thread& ppu){ if (ppu.id == 0x1000000) { m_pc = ppu.cia; m_run = is_running(ppu); } });
-								trace("rseam: %llufps +%llugen | gpu+%llu | GET %07x PUT %07x op%u c%d | main %s 0x%x | claim %llu/s wl %llu/s",
+								trace("rseam: %llufps +%llugen | gpu+%llu | GET %07x PUT %07x op%u c%d | main %s 0x%x | claim %llu/s wl %llu/s slips %llu",
 									dt ? (flips - s_f0) * 1000000ull / dt : 0, gen - s_gen0,
 									gpu_seq - s_g0,
 									render->ctrl ? +render->ctrl->get : 0, render->ctrl ? +render->ctrl->put : 0, g_ps5_rsx_op.load(), g_ps5_rsx_core.load(),
 									m_run ? "RUN" : "park", m_pc,
 									dt ? (pok - s_pok0) * 1000000ull / dt : 0,
-									dt ? (c - s_c0) * 1000000ull / dt : 0);
+									dt ? (c - s_c0) * 1000000ull / dt : 0,
+									g_ps5_spu_attack_slips.load());
 								s_r_last = now; s_f0 = flips; s_g0 = gpu_seq; s_c0 = c; s_gen0 = gen; s_pok0 = pok;
 							}
 						}
