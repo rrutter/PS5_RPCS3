@@ -4664,6 +4664,16 @@ bool spu_thread::process_mfc_cmd()
 		spu_mega_log(*this, "getllar", addr, 0, 0); // lab
 		g_ps5_mfc_claims[lv2_id % 64][0].raw()++; // lab: claim-probe
 
+		// lab: the SPU ATTACK v2 - slip the READ (the wait-line byte CHECK) for a SPURS kernel in the
+		// rendezvous region (0x1c300-0x1c540). The last finisher reads the byte to decide fire-or-skip;
+		// delaying the read lets the byte drain first -> reads 0 -> skips -> the freeze, summoned on demand.
+		static const bool s_spu_attack_g = fs::is_file("/app0/rpcs3-spu-attack.txt");
+		if (s_spu_attack_g && spurs_addr != 0u - 0x80u && pc >= 0x1c300u && pc <= 0x1c540u)
+		{
+			g_ps5_spu_attack_slips.raw()++;
+			std::this_thread::yield();
+		}
+
 		// lab: the GETLLAR re-read storm throttle (the contention backoff, flag
 		// rpcs3-putllc-backoff.txt). The storm's ENGINE is the re-read spin: a kernel
 		// GETLLARs a hot line, sees a rival's commit, re-reads instantly, forever - the
@@ -6537,6 +6547,16 @@ bool spu_thread::set_ch_value(u32 ch, u32 value)
 	{
 		// Reset GETLLAR metadata
 		last_getllar_addr = umax;
+
+		// lab: the SPU ATTACK v2 - slip the FIRE (the completion event-send to main) for a SPURS kernel
+		// in the rendezvous region. The gong-strike itself - preempt right at it so the phase-complete
+		// lands late / after the byte drained. (SPURS kernels only; FMOD excluded by the addr check.)
+		static const bool s_spu_attack_f = fs::is_file("/app0/rpcs3-spu-attack.txt");
+		if (s_spu_attack_f && spurs_addr != 0u - 0x80u && pc >= 0x1c300u && pc <= 0x1c540u)
+		{
+			g_ps5_spu_attack_slips.raw()++;
+			std::this_thread::yield();
+		}
 
 		// lab: /app0/spurs-signal-trace.txt = log every SPU->PPU completion signal
 		// (the ASMJIT deadlock suspect: does the kernel's phone call fire under JIT?)
