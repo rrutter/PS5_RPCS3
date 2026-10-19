@@ -1278,6 +1278,17 @@ namespace rsx
 
 		while (!test_stopped())
 		{
+			// lab: the RSX ATTACK (rpcs3-rsx-attack.txt) - the user's heart-attack stress test. Bog the RSX
+			// thread (a hard spin at its boosted +1 priority) to drown the box on demand + watch how the
+			// SPU/PPU rendezvous responds (the render-seam meter captures the response live). A reproducible
+			// freeze at idle = the hunt's holy grail: fast iteration, no waiting on a random mid-fight freeze.
+			static const bool s_rsx_attack = fs::is_file("/app0/rpcs3-rsx-attack.txt");
+			if (s_rsx_attack && Emu.IsRunning())
+			{
+				const u64 t0 = get_system_time();
+				while (get_system_time() - t0 < 1000) { utils::pause(); } // ~1ms hard spin per RSX pass
+			}
+
 			// Wait for external pause events
 			if (external_interrupt_lock)
 			{
